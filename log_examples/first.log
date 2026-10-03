@@ -1,0 +1,306 @@
+{"@timestamp": "2026-09-11T22:11:34.000Z","level": "INFO","message": "Hello there!","requestId": "req-1"}
+{"@timestamp": "2026-09-11T22:11:20.000Z","level": "INFO","message": "request received","requestId": "req-0", "body": "string {\"foo\":\"bar\"}"}
+Some line which is not json
+{"@timestamp": "2026-09-11T22:00:02.025Z", "level": "INFO", "message": "cache miss", "requestId": "req-1", "service": "auth", "body": "{\"page\": 7, \"filter\": \"active\"}"}
+	at com.example.Router.dispatch(Router.java:88)
+{"@timestamp": "2026-09-11T22:00:06.542Z", "level": "WARN", "message": "slow query detected", "requestId": "req-2"}
+{"@timestamp": "2026-09-11T22:00:12.370Z", "level": "INFO", "message": "cache hit", "requestId": "req-3", "userId": "user-10", "durationMs": 2758, "body": "{\"page\": 7, \"filter\": \"active\"}"}
+{"@timestamp": "2026-09-11T22:00:18.988Z", "level": "INFO", "message": "request received", "requestId": "req-4"}
+{"@timestamp": "2026-09-11T22:00:25.579Z", "level": "INFO", "message": "request completed", "requestId": "req-5", "service": "gateway"}
+{"@timestamp": "2026-09-11T22:00:32.863Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-6", "service": "billing", "userId": "user-18"}
+{"@timestamp": "2026-09-11T22:00:36.409Z", "level": "INFO", "message": "cache hit", "requestId": "req-7", "service": "billing"}
+{"@timestamp": "2026-09-11T22:00:37.643Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-8", "service": "auth", "userId": "user-37"}
+{"@timestamp": "2026-09-11T22:00:45.548Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-9", "service": "gateway", "userId": "user-36", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:00:51.772Z", "level": "INFO", "message": "config reloaded", "requestId": "req-10", "service": "auth", "durationMs": 1311}
+{"@timestamp": "2026-09-11T22:00:54.166Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-11"}
+PANIC: unexpected state
+{"@timestamp": "2026-09-11T22:00:56.864Z", "level": "WARN", "message": "rate limit approaching", "requestId": "req-12", "userId": "user-19"}
+{"@timestamp": "2026-09-11T22:01:02.859Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-13", "userId": "user-41", "durationMs": 4159}
+{"@timestamp": "2026-09-11T22:01:06.411Z", "level": "WARN", "message": "slow query detected", "requestId": "req-14", "durationMs": 2974}
+{"@timestamp": "2026-09-11T22:01:11.656Z", "level": "INFO", "message": "cache miss", "requestId": "req-15", "durationMs": 3982}
+{"@timestamp": "2026-09-11T22:01:21.440Z", "level": "INFO", "message": "cache hit", "requestId": "req-16", "durationMs": 4323}
+{"@timestamp": "2026-09-11T22:01:26.391Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-17"}
+{"@timestamp": "2026-09-11T22:01:34.514Z", "level": "INFO", "message": "cache miss", "requestId": "req-18", "service": "auth", "durationMs": 1805, "body": "{\"page\": 1, \"filter\": \"active\"}"}
+{"@timestamp": "2026-09-11T22:01:36.394Z", "level": "INFO", "message": "request completed", "requestId": "req-19", "userId": "user-32", "durationMs": 1084}
+{"@timestamp": "2026-09-11T22:01:44.642Z", "level": "DEBUG", "message": "payload size: 1042 bytes", "requestId": "req-20", "service": "auth"}
+{"@timestamp": "2026-09-11T22:01:46.331Z", "level": "ERROR", "message": "database connection failed", "requestId": "req-21", "service": "billing", "durationMs": 1570, "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:01:51.804Z", "level": "INFO", "message": "request completed", "requestId": "req-22", "service": "notifications", "userId": "user-42"}
+{"@timestamp": "2026-09-11T22:01:55.974Z", "level": "DEBUG", "message": "payload size: 1042 bytes", "requestId": "req-23", "service": "search", "durationMs": 18}
+{"@timestamp": "2026-09-11T22:02:04.266Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-24", "durationMs": 1784}
+{"@timestamp": "2026-09-11T22:02:13.328Z", "level": "INFO", "message": "request received", "requestId": "req-25", "service": "search"}
+{"@timestamp": "2026-09-11T22:02:16.199Z", "level": "INFO", "message": "request completed", "requestId": "req-26", "durationMs": 983}
+{"@timestamp": "2026-09-11T22:02:17.833Z", "level": "INFO", "message": "session refreshed", "requestId": "req-27", "durationMs": 2137}
+{"@timestamp": "2026-09-11T22:02:22.104Z", "level": "DEBUG", "message": "entered handler", "requestId": "req-28", "userId": "user-21"}
+PANIC: unexpected state
+{"@timestamp": "2026-09-11T22:02:24.179Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-29", "userId": "user-23"}
+{"@timestamp": "2026-09-11T22:02:27.627Z", "level": "WARN", "message": "rate limit approaching", "requestId": "req-30", "body": "{\"page\": 9, \"filter\": \"all\"}"}
+{"@timestamp": "2026-09-11T22:02:30.588Z", "level": "INFO", "message": "health check ok", "requestId": "req-31", "service": "auth", "durationMs": 2309}
+{"@timestamp": "2026-09-11T22:02:35.291Z", "level": "ERROR", "message": "timeout waiting for upstream", "requestId": "req-32", "userId": "user-4", "durationMs": 3470, "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:02:38.943Z", "level": "INFO", "message": "cache hit", "requestId": "req-33", "body": "{\"page\": 2, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:02:47.979Z", "level": "INFO", "message": "config reloaded", "requestId": "req-34", "service": "gateway", "userId": "user-24"}
+{"@timestamp": "2026-09-11T22:02:54.194Z", "level": "ERROR", "message": "unhandled exception in worker", "requestId": "req-35"}
+{"@timestamp": "2026-09-11T22:02:59.079Z", "level": "INFO", "message": "cache hit", "requestId": "req-36", "userId": "user-48"}
+{"@timestamp": "2026-09-11T22:03:03.352Z", "level": "INFO", "message": "request completed", "requestId": "req-37", "service": "auth", "durationMs": 3771}
+{"@timestamp": "2026-09-11T22:03:07.580Z", "level": "INFO", "message": "cache miss", "requestId": "req-38", "service": "billing"}
+{"@timestamp": "2026-09-11T22:03:15.275Z", "level": "WARN", "message": "rate limit approaching", "requestId": "req-39", "userId": "user-17", "durationMs": 2175, "body": "{\"page\": 7, \"filter\": \"all\"}"}
+{"@timestamp": "2026-09-11T22:03:21.721Z", "level": "WARN", "message": "memory usage above 80%", "requestId": "req-40", "service": "notifications", "userId": "user-3", "body": "{\"page\": 9, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:03:26.093Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-41"}
+{"@timestamp": "2026-09-11T22:03:31.612Z", "level": "INFO", "message": "session refreshed", "requestId": "req-42", "service": "billing", "durationMs": 3106}
+{"@timestamp": "2026-09-11T22:03:37.027Z", "level": "WARN", "message": "slow query detected", "requestId": "req-43", "service": "gateway"}
+{"@timestamp": "2026-09-11T22:03:45.718Z", "level": "INFO", "message": "config reloaded", "requestId": "req-44", "service": "gateway", "durationMs": 2746, "body": "{\"page\": 4, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:03:49.868Z", "level": "INFO", "message": "request received", "requestId": "req-45", "service": "search"}
+{"@timestamp": "2026-09-11T22:03:54.603Z", "level": "DEBUG", "message": "payload size: 1042 bytes", "requestId": "req-46", "service": "gateway", "durationMs": 874}
+{"@timestamp": "2026-09-11T22:04:04.078Z", "level": "INFO", "message": "config reloaded", "requestId": "req-47", "service": "auth"}
+{"@timestamp": "2026-09-11T22:04:11.050Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-48"}
+{"@timestamp": "2026-09-11T22:04:14.811Z", "level": "DEBUG", "message": "payload size: 1042 bytes", "requestId": "req-49", "service": "gateway", "durationMs": 4271}
+{"@timestamp": "2026-09-11T22:04:22.890Z", "level": "INFO", "message": "cache miss", "requestId": "req-50", "service": "billing", "durationMs": 1236}
+{"@timestamp": "2026-09-11T22:04:26.955Z", "level": "DEBUG", "message": "payload size: 1042 bytes", "requestId": "req-51", "service": "search", "durationMs": 3442}
+{"@timestamp": "2026-09-11T22:04:28.832Z", "level": "WARN", "message": "deprecated endpoint used", "requestId": "req-52", "service": "billing", "userId": "user-25"}
+{"@timestamp": "2026-09-11T22:04:38.651Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-53", "service": "billing", "durationMs": 2754}
+{"@timestamp": "2026-09-11T22:04:42.511Z", "level": "DEBUG", "message": "entered handler", "requestId": "req-54"}
+{"@timestamp": "2026-09-11T22:04:45.169Z", "level": "DEBUG", "message": "entered handler", "requestId": "req-55", "userId": "user-17"}
+{"@timestamp": "2026-09-11T22:04:52.453Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-56", "body": "{\"page\": 6, \"filter\": \"active\"}"}
+{"@timestamp": "2026-09-11T22:04:54.225Z", "level": "INFO", "message": "cache miss", "requestId": "req-57", "service": "auth", "durationMs": 3880}
+{"@timestamp": "2026-09-11T22:04:58.701Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-58", "service": "notifications"}
+{"@timestamp": "2026-09-11T22:05:03.811Z", "level": "WARN", "message": "slow query detected", "requestId": "req-59"}
+{"@timestamp": "2026-09-11T22:05:07.888Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-60", "service": "billing"}
+{"@timestamp": "2026-09-11T22:05:09.243Z", "level": "WARN", "message": "deprecated endpoint used", "requestId": "req-61", "userId": "user-42", "durationMs": 3442}
+{"@timestamp": "2026-09-11T22:05:15.893Z", "level": "DEBUG", "message": "entered handler", "requestId": "req-62", "service": "notifications", "durationMs": 4409}
+{"@timestamp": "2026-09-11T22:05:21.223Z", "level": "INFO", "message": "request completed", "requestId": "req-63", "service": "search", "userId": "user-30"}
+{"@timestamp": "2026-09-11T22:05:30.094Z", "level": "INFO", "message": "cache hit", "requestId": "req-64", "service": "billing", "durationMs": 2264}
+{"@timestamp": "2026-09-11T22:05:34.181Z", "level": "INFO", "message": "session refreshed", "requestId": "req-65", "service": "gateway"}
+{"@timestamp": "2026-09-11T22:05:36.482Z", "level": "INFO", "message": "session refreshed", "requestId": "req-66", "userId": "user-38"}
+{"@timestamp": "2026-09-11T22:05:45.820Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-67", "service": "billing", "userId": "user-47", "durationMs": 980}
+{"@timestamp": "2026-09-11T22:05:49.016Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-68", "service": "notifications"}
+{"@timestamp": "2026-09-11T22:05:53.319Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-69", "service": "auth", "durationMs": 373}
+{"@timestamp": "2026-09-11T22:05:56.972Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-70"}
+{"@timestamp": "2026-09-11T22:05:58.230Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-71", "durationMs": 440}
+{"@timestamp": "2026-09-11T22:06:03.317Z", "level": "INFO", "message": "request completed", "requestId": "req-72"}
+{"@timestamp": "2026-09-11T22:06:10.778Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-73", "durationMs": 494}
+{"@timestamp": "2026-09-11T22:06:15.418Z", "level": "INFO", "message": "health check ok", "requestId": "req-74", "userId": "user-12"}
+{"@timestamp": "2026-09-11T22:06:23.716Z", "level": "INFO", "message": "cache miss", "requestId": "req-75", "service": "billing"}
+{"@timestamp": "2026-09-11T22:06:28.151Z", "level": "INFO", "message": "config reloaded", "requestId": "req-76", "service": "gateway", "body": "{\"page\": 3, \"filter\": \"all\"}"}
+{"@timestamp": "2026-09-11T22:06:33.600Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-77"}
+{"@timestamp": "2026-09-11T22:06:36.212Z", "level": "INFO", "message": "session refreshed", "requestId": "req-78", "durationMs": 1876}
+{"@timestamp": "2026-09-11T22:06:37.995Z", "level": "ERROR", "message": "timeout waiting for upstream", "requestId": "req-79", "durationMs": 4252}
+{"@timestamp": "2026-09-11T22:06:45.645Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-80", "service": "search", "userId": "user-43", "durationMs": 1318}
+{"@timestamp": "2026-09-11T22:06:51.323Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-81", "service": "auth", "userId": "user-21", "durationMs": 3312}
+{"@timestamp": "2026-09-11T22:06:52.996Z", "level": "WARN", "message": "deprecated endpoint used", "requestId": "req-82", "service": "gateway"}
+{"@timestamp": "2026-09-11T22:06:54.204Z", "level": "INFO", "message": "config reloaded", "requestId": "req-83", "service": "billing"}
+{"@timestamp": "2026-09-11T22:06:58.930Z", "level": "INFO", "message": "health check ok", "requestId": "req-84", "durationMs": 930}
+{"@timestamp": "2026-09-11T22:07:02.440Z", "level": "INFO", "message": "config reloaded", "requestId": "req-85"}
+{"@timestamp": "2026-09-11T22:07:05.832Z", "level": "INFO", "message": "config reloaded", "requestId": "req-86", "userId": "user-5", "durationMs": 3400}
+{"@timestamp": "2026-09-11T22:07:11.672Z", "level": "INFO", "message": "health check ok", "requestId": "req-87"}
+{"@timestamp": "2026-09-11T22:07:20.223Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-88", "service": "notifications"}
+{"@timestamp": "2026-09-11T22:07:24.808Z", "level": "DEBUG", "message": "entered handler", "requestId": "req-89", "durationMs": 3875}
+{"@timestamp": "2026-09-11T22:07:32.487Z", "level": "ERROR", "message": "unhandled exception in worker", "requestId": "req-90", "service": "auth", "userId": "user-38", "durationMs": 823, "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:07:40.502Z", "level": "INFO", "message": "session refreshed", "requestId": "req-91", "durationMs": 2172}
+{"@timestamp": "2026-09-11T22:07:43.374Z", "level": "INFO", "message": "config reloaded", "requestId": "req-92", "service": "billing"}
+{"@timestamp": "2026-09-11T22:07:45.614Z", "level": "ERROR", "message": "timeout waiting for upstream", "requestId": "req-93", "body": "{\"page\": 2, \"filter\": \"all\"}", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:07:46.661Z", "level": "INFO", "message": "request received", "requestId": "req-94", "service": "billing", "durationMs": 3376}
+{"@timestamp": "2026-09-11T22:07:49.840Z", "level": "INFO", "message": "session refreshed", "requestId": "req-95", "userId": "user-38", "durationMs": 3778}
+{"@timestamp": "2026-09-11T22:07:51.760Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-96", "userId": "user-29"}
+{"@timestamp": "2026-09-11T22:07:59.466Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-97", "userId": "user-25", "body": "{\"page\": 7, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:08:05.182Z", "level": "INFO", "message": "request received", "requestId": "req-98", "durationMs": 402}
+{"@timestamp": "2026-09-11T22:08:10.976Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-99", "service": "gateway"}
+{"@timestamp": "2026-09-11T22:08:14.619Z", "level": "INFO", "message": "request received", "requestId": "req-100", "service": "search", "userId": "user-24", "body": "{\"page\": 5, \"filter\": \"all\"}"}
+{"@timestamp": "2026-09-11T22:08:17.824Z", "level": "INFO", "message": "config reloaded", "requestId": "req-101"}
+{"@timestamp": "2026-09-11T22:08:26.814Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-102", "durationMs": 1849}
+{"@timestamp": "2026-09-11T22:08:34.804Z", "level": "WARN", "message": "rate limit approaching", "requestId": "req-103", "service": "search", "userId": "user-35", "durationMs": 3020}
+{"@timestamp": "2026-09-11T22:08:42.646Z", "level": "ERROR", "message": "timeout waiting for upstream", "requestId": "req-104", "service": "gateway", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:08:45.296Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-105", "userId": "user-3"}
+{"@timestamp": "2026-09-11T22:08:47.536Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-106", "service": "billing"}
+{"@timestamp": "2026-09-11T22:08:51.442Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-107"}
+{"@timestamp": "2026-09-11T22:08:55.896Z", "level": "DEBUG", "message": "entered handler", "requestId": "req-108", "userId": "user-44"}
+{"@timestamp": "2026-09-11T22:08:57.303Z", "level": "INFO", "message": "cache miss", "requestId": "req-109", "body": "{\"page\": 4, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:08:58.354Z", "level": "INFO", "message": "cache miss", "requestId": "req-110", "durationMs": 1698}
+{"@timestamp": "2026-09-11T22:09:02.690Z", "level": "INFO", "message": "request received", "requestId": "req-111", "service": "gateway"}
+{"@timestamp": "2026-09-11T22:09:03.824Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-112", "userId": "user-21", "durationMs": 2174, "body": "{\"page\": 7, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:09:06.311Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-113", "userId": "user-33", "durationMs": 356}
+{"@timestamp": "2026-09-11T22:09:15.619Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-114", "service": "search", "body": "{\"page\": 8, \"filter\": \"active\"}"}
+{"@timestamp": "2026-09-11T22:09:22.241Z", "level": "INFO", "message": "request completed", "requestId": "req-115", "service": "notifications"}
+{"@timestamp": "2026-09-11T22:09:31.542Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-116", "userId": "user-45", "durationMs": 1762}
+{"@timestamp": "2026-09-11T22:09:38.889Z", "level": "DEBUG", "message": "payload size: 1042 bytes", "requestId": "req-117", "service": "auth", "userId": "user-21"}
+{"@timestamp": "2026-09-11T22:09:46.957Z", "level": "INFO", "message": "request completed", "requestId": "req-118", "service": "auth"}
+{"@timestamp": "2026-09-11T22:09:56.532Z", "level": "INFO", "message": "request completed", "requestId": "req-119", "service": "search"}
+{"@timestamp": "2026-09-11T22:10:02.638Z", "level": "WARN", "message": "memory usage above 80%", "requestId": "req-120", "service": "search", "userId": "user-7"}
+{"@timestamp": "2026-09-11T22:10:08.225Z", "level": "INFO", "message": "session refreshed", "requestId": "req-121"}
+{"@timestamp": "2026-09-11T22:10:09.848Z", "level": "ERROR", "message": "timeout waiting for upstream", "requestId": "req-122", "service": "billing", "durationMs": 2784, "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:10:16.919Z", "level": "INFO", "message": "request received", "requestId": "req-123", "service": "notifications", "userId": "user-27"}
+{"@timestamp": "2026-09-11T22:10:23.714Z", "level": "WARN", "message": "memory usage above 80%", "requestId": "req-124", "service": "auth", "userId": "user-49"}
+{"@timestamp": "2026-09-11T22:10:31.211Z", "level": "WARN", "message": "deprecated endpoint used", "requestId": "req-125", "service": "gateway", "durationMs": 3522, "body": "{\"page\": 8, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:10:32.436Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-126", "service": "gateway", "userId": "user-14"}
+{"@timestamp": "2026-09-11T22:10:34.443Z", "level": "DEBUG", "message": "payload size: 1042 bytes", "requestId": "req-127", "service": "search", "durationMs": 2902, "body": "{\"page\": 1, \"filter\": \"all\"}"}
+	at com.example.Router.dispatch(Router.java:88)
+{"@timestamp": "2026-09-11T22:10:41.032Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-128", "service": "search", "userId": "user-26", "durationMs": 2661}
+{"@timestamp": "2026-09-11T22:10:49.883Z", "level": "INFO", "message": "request completed", "requestId": "req-129", "service": "auth", "userId": "user-38", "body": "{\"page\": 5, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:10:56.680Z", "level": "INFO", "message": "request completed", "requestId": "req-130", "userId": "user-33", "durationMs": 2863}
+{"@timestamp": "2026-09-11T22:10:59.921Z", "level": "INFO", "message": "cache hit", "requestId": "req-131", "service": "gateway"}
+{"@timestamp": "2026-09-11T22:11:08.396Z", "level": "WARN", "message": "memory usage above 80%", "requestId": "req-132", "service": "notifications"}
+{"@timestamp": "2026-09-11T22:11:14.550Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-133", "service": "billing"}
+{"@timestamp": "2026-09-11T22:11:23.012Z", "level": "INFO", "message": "request received", "requestId": "req-134", "service": "billing", "userId": "user-6"}
+{"@timestamp": "2026-09-11T22:11:32.989Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-135", "durationMs": 3897}
+{"@timestamp": "2026-09-11T22:11:41.094Z", "level": "INFO", "message": "request completed", "requestId": "req-136", "userId": "user-16"}
+{"@timestamp": "2026-09-11T22:11:44.466Z", "level": "INFO", "message": "health check ok", "requestId": "req-137", "service": "billing", "durationMs": 2742, "body": "{\"page\": 2, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:11:49.724Z", "level": "ERROR", "message": "authentication rejected: invalid token", "requestId": "req-138", "userId": "user-38", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:11:56.856Z", "level": "WARN", "message": "slow query detected", "requestId": "req-139", "service": "search", "durationMs": 1047}
+{"@timestamp": "2026-09-11T22:12:05.951Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-140", "userId": "user-20", "durationMs": 1755}
+{"@timestamp": "2026-09-11T22:12:09.109Z", "level": "INFO", "message": "health check ok", "requestId": "req-141", "userId": "user-50"}
+{"@timestamp": "2026-09-11T22:12:16.006Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-142", "userId": "user-12"}
+{"@timestamp": "2026-09-11T22:12:19.744Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-143", "service": "gateway"}
+{"@timestamp": "2026-09-11T22:12:24.290Z", "level": "INFO", "message": "health check ok", "requestId": "req-144"}
+{"@timestamp": "2026-09-11T22:12:32.762Z", "level": "INFO", "message": "session refreshed", "requestId": "req-145", "durationMs": 1636}
+{"@timestamp": "2026-09-11T22:12:37.815Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-146", "durationMs": 4227, "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:12:43.275Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-147", "userId": "user-15"}
+{"@timestamp": "2026-09-11T22:12:50.329Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-148", "service": "search", "body": "{\"page\": 2, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:12:53.469Z", "level": "INFO", "message": "health check ok", "requestId": "req-149"}
+{"@timestamp": "2026-09-11T22:12:55.396Z", "level": "INFO", "message": "request received", "requestId": "req-150", "service": "gateway"}
+{"@timestamp": "2026-09-11T22:13:00.639Z", "level": "INFO", "message": "request completed", "requestId": "req-151", "service": "search", "body": "{\"page\": 8, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:13:10.227Z", "level": "INFO", "message": "cache hit", "requestId": "req-152", "service": "auth", "durationMs": 3413}
+{"@timestamp": "2026-09-11T22:13:20.225Z", "level": "INFO", "message": "request completed", "requestId": "req-153"}
+WARNING: disk space low on /var (7% free)
+{"@timestamp": "2026-09-11T22:13:21.875Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-154", "service": "auth", "durationMs": 1976}
+{"@timestamp": "2026-09-11T22:13:28.011Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-155", "durationMs": 3807}
+{"@timestamp": "2026-09-11T22:13:31.841Z", "level": "INFO", "message": "request completed", "requestId": "req-156", "durationMs": 1652, "body": "{\"page\": 4, \"filter\": \"active\"}"}
+{"@timestamp": "2026-09-11T22:13:37.368Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-157", "service": "auth", "durationMs": 2925}
+{"@timestamp": "2026-09-11T22:13:43.647Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-158", "service": "search"}
+{"@timestamp": "2026-09-11T22:13:52.355Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-159"}
+{"@timestamp": "2026-09-11T22:13:55.913Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-160", "service": "billing", "durationMs": 3491}
+{"@timestamp": "2026-09-11T22:14:03.956Z", "level": "INFO", "message": "session refreshed", "requestId": "req-161", "service": "auth", "userId": "user-41"}
+{"@timestamp": "2026-09-11T22:14:07.931Z", "level": "INFO", "message": "cache hit", "requestId": "req-162"}
+{"@timestamp": "2026-09-11T22:14:14.301Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-163", "service": "gateway"}
+{"@timestamp": "2026-09-11T22:14:17.843Z", "level": "INFO", "message": "session refreshed", "requestId": "req-164", "service": "billing", "userId": "user-8", "durationMs": 1525}
+{"@timestamp": "2026-09-11T22:14:26.963Z", "level": "INFO", "message": "health check ok", "requestId": "req-165", "userId": "user-40", "durationMs": 4024}
+{"@timestamp": "2026-09-11T22:14:29.425Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-166"}
+{"@timestamp": "2026-09-11T22:14:31.988Z", "level": "WARN", "message": "rate limit approaching", "requestId": "req-167"}
+{"@timestamp": "2026-09-11T22:14:38.508Z", "level": "INFO", "message": "request completed", "requestId": "req-168", "durationMs": 4048, "body": "{\"page\": 9, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:14:47.640Z", "level": "WARN", "message": "slow query detected", "requestId": "req-169", "service": "search"}
+{"@timestamp": "2026-09-11T22:14:49.768Z", "level": "INFO", "message": "request completed", "requestId": "req-170", "service": "notifications", "userId": "user-50"}
+{"@timestamp": "2026-09-11T22:14:53.211Z", "level": "WARN", "message": "slow query detected", "requestId": "req-171", "durationMs": 1327}
+{"@timestamp": "2026-09-11T22:15:00.181Z", "level": "WARN", "message": "rate limit approaching", "requestId": "req-172", "userId": "user-41"}
+{"@timestamp": "2026-09-11T22:15:09.276Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-173", "durationMs": 2766}
+{"@timestamp": "2026-09-11T22:15:10.359Z", "level": "INFO", "message": "health check ok", "requestId": "req-174"}
+{"@timestamp": "2026-09-11T22:15:19.655Z", "level": "ERROR", "message": "timeout waiting for upstream", "requestId": "req-175", "service": "search", "userId": "user-5", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:15:26.276Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-176", "userId": "user-23"}
+{"@timestamp": "2026-09-11T22:15:35.384Z", "level": "INFO", "message": "cache miss", "requestId": "req-177", "service": "billing", "durationMs": 415}
+{"@timestamp": "2026-09-11T22:15:42.638Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-178", "durationMs": 1306}
+{"@timestamp": "2026-09-11T22:15:51.538Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-179", "service": "search"}
+{"@timestamp": "2026-09-11T22:15:52.826Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-180"}
+{"@timestamp": "2026-09-11T22:15:59.963Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-181"}
+{"@timestamp": "2026-09-11T22:16:09.258Z", "level": "INFO", "message": "session refreshed", "requestId": "req-182", "durationMs": 974}
+{"@timestamp": "2026-09-11T22:16:16.071Z", "level": "INFO", "message": "config reloaded", "requestId": "req-183", "durationMs": 4171}
+{"@timestamp": "2026-09-11T22:16:17.211Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-184", "userId": "user-33", "durationMs": 2610}
+{"@timestamp": "2026-09-11T22:16:22.818Z", "level": "INFO", "message": "config reloaded", "requestId": "req-185"}
+{"@timestamp": "2026-09-11T22:16:29.157Z", "level": "ERROR", "message": "database connection failed", "requestId": "req-186", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+WARNING: disk space low on /var (7% free)
+{"@timestamp": "2026-09-11T22:16:35.147Z", "level": "ERROR", "message": "authentication rejected: invalid token", "requestId": "req-187", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:16:42.298Z", "level": "ERROR", "message": "unhandled exception in worker", "requestId": "req-188", "service": "auth", "userId": "user-29", "durationMs": 1241, "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:16:51.191Z", "level": "INFO", "message": "cache hit", "requestId": "req-189"}
+{"@timestamp": "2026-09-11T22:16:54.661Z", "level": "WARN", "message": "rate limit approaching", "requestId": "req-190"}
+{"@timestamp": "2026-09-11T22:17:00.285Z", "level": "DEBUG", "message": "entered handler", "requestId": "req-191", "userId": "user-20", "durationMs": 2439}
+{"@timestamp": "2026-09-11T22:17:08.609Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-192"}
+{"@timestamp": "2026-09-11T22:17:17.997Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-193", "durationMs": 2357}
+{"@timestamp": "2026-09-11T22:17:26.668Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-194", "service": "notifications", "userId": "user-36"}
+{"@timestamp": "2026-09-11T22:17:30.916Z", "level": "INFO", "message": "config reloaded", "requestId": "req-195", "service": "gateway", "userId": "user-27", "durationMs": 3870, "body": "{\"page\": 3, \"filter\": \"active\"}"}
+{"@timestamp": "2026-09-11T22:17:34.332Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-196", "service": "gateway", "durationMs": 2339}
+{"@timestamp": "2026-09-11T22:17:38.879Z", "level": "INFO", "message": "cache hit", "requestId": "req-197", "service": "gateway", "durationMs": 3253}
+{"@timestamp": "2026-09-11T22:17:44.776Z", "level": "INFO", "message": "request received", "requestId": "req-198", "service": "notifications", "userId": "user-22", "durationMs": 4451}
+{"@timestamp": "2026-09-11T22:17:48.647Z", "level": "WARN", "message": "deprecated endpoint used", "requestId": "req-199", "service": "auth", "userId": "user-47"}
+{"@timestamp": "2026-09-11T22:17:55.456Z", "level": "INFO", "message": "cache miss", "requestId": "req-200", "service": "search", "body": "{\"page\": 2, \"filter\": \"active\"}"}
+{"@timestamp": "2026-09-11T22:18:03.787Z", "level": "INFO", "message": "request received", "requestId": "req-201", "service": "gateway", "durationMs": 2701}
+{"@timestamp": "2026-09-11T22:18:05.054Z", "level": "ERROR", "message": "timeout waiting for upstream", "requestId": "req-202", "userId": "user-8", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:18:10.760Z", "level": "INFO", "message": "health check ok", "requestId": "req-203", "service": "gateway", "userId": "user-9"}
+{"@timestamp": "2026-09-11T22:18:17.185Z", "level": "WARN", "message": "deprecated endpoint used", "requestId": "req-204"}
+{"@timestamp": "2026-09-11T22:18:19.723Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-205", "userId": "user-37", "durationMs": 4487}
+{"@timestamp": "2026-09-11T22:18:28.876Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-206"}
+{"@timestamp": "2026-09-11T22:18:38.332Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-207", "service": "search", "durationMs": 3788}
+{"@timestamp": "2026-09-11T22:18:39.737Z", "level": "INFO", "message": "request received", "requestId": "req-208", "durationMs": 2823}
+{"@timestamp": "2026-09-11T22:18:41.694Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-209", "service": "search", "userId": "user-9"}
+{"@timestamp": "2026-09-11T22:18:49.077Z", "level": "DEBUG", "message": "payload size: 1042 bytes", "requestId": "req-210"}
+{"@timestamp": "2026-09-11T22:18:58.213Z", "level": "ERROR", "message": "timeout waiting for upstream", "requestId": "req-211", "service": "notifications", "durationMs": 1825}
+{"@timestamp": "2026-09-11T22:19:06.902Z", "level": "WARN", "message": "deprecated endpoint used", "requestId": "req-212", "durationMs": 2836}
+{"@timestamp": "2026-09-11T22:19:08.934Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-213", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:19:17.546Z", "level": "ERROR", "message": "database connection failed", "requestId": "req-214", "service": "auth", "durationMs": 1780}
+{"@timestamp": "2026-09-11T22:19:22.785Z", "level": "WARN", "message": "rate limit approaching", "requestId": "req-215"}
+{"@timestamp": "2026-09-11T22:19:32.011Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-216", "service": "notifications"}
+{"@timestamp": "2026-09-11T22:19:39.580Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-217"}
+{"@timestamp": "2026-09-11T22:19:46.998Z", "level": "INFO", "message": "health check ok", "requestId": "req-218", "service": "notifications"}
+{"@timestamp": "2026-09-11T22:19:55.934Z", "level": "INFO", "message": "config reloaded", "requestId": "req-219", "service": "search", "durationMs": 1990}
+{"@timestamp": "2026-09-11T22:19:58.878Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-220", "service": "gateway", "userId": "user-25"}
+{"@timestamp": "2026-09-11T22:20:03.701Z", "level": "WARN", "message": "memory usage above 80%", "requestId": "req-221", "service": "gateway", "durationMs": 126}
+{"@timestamp": "2026-09-11T22:20:06.465Z", "level": "DEBUG", "message": "entered handler", "requestId": "req-222"}
+{"@timestamp": "2026-09-11T22:20:11.854Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-223", "userId": "user-24"}
+{"@timestamp": "2026-09-11T22:20:20.633Z", "level": "INFO", "message": "cache miss", "requestId": "req-224", "service": "search", "userId": "user-15", "body": "{\"page\": 9, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:20:27.935Z", "level": "INFO", "message": "cache miss", "requestId": "req-225", "service": "search", "durationMs": 2766}
+{"@timestamp": "2026-09-11T22:20:36.406Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-226", "service": "notifications"}
+{"@timestamp": "2026-09-11T22:20:37.942Z", "level": "INFO", "message": "request completed", "requestId": "req-227"}
+{"@timestamp": "2026-09-11T22:20:42.011Z", "level": "INFO", "message": "request received", "requestId": "req-228", "service": "search"}
+{"@timestamp": "2026-09-11T22:20:50.686Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-229", "service": "notifications", "durationMs": 2251}
+{"@timestamp": "2026-09-11T22:21:00.518Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-230", "durationMs": 790, "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:21:06.352Z", "level": "INFO", "message": "health check ok", "requestId": "req-231", "userId": "user-26"}
+{"@timestamp": "2026-09-11T22:21:12.052Z", "level": "INFO", "message": "request received", "requestId": "req-232", "service": "search"}
+{"@timestamp": "2026-09-11T22:21:14.563Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-233", "durationMs": 4327}
+{"@timestamp": "2026-09-11T22:21:22.840Z", "level": "INFO", "message": "request completed", "requestId": "req-234", "userId": "user-35", "body": "{\"page\": 6, \"filter\": \"active\"}"}
+{"@timestamp": "2026-09-11T22:21:26.610Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-235", "service": "notifications", "userId": "user-25"}
+{"@timestamp": "2026-09-11T22:21:30.419Z", "level": "INFO", "message": "config reloaded", "requestId": "req-236", "userId": "user-7"}
+{"@timestamp": "2026-09-11T22:21:38.411Z", "level": "INFO", "message": "request received", "requestId": "req-237"}
+{"@timestamp": "2026-09-11T22:21:45.853Z", "level": "INFO", "message": "session refreshed", "requestId": "req-238", "service": "notifications", "userId": "user-16", "body": "{\"page\": 3, \"filter\": \"all\"}"}
+{"@timestamp": "2026-09-11T22:21:49.610Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-239", "service": "auth", "userId": "user-20"}
+{"@timestamp": "2026-09-11T22:21:51.801Z", "level": "DEBUG", "message": "payload size: 1042 bytes", "requestId": "req-240", "durationMs": 735}
+{"@timestamp": "2026-09-11T22:21:58.685Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-241", "service": "search"}
+{"@timestamp": "2026-09-11T22:22:03.270Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-242", "userId": "user-18", "durationMs": 4040}
+{"@timestamp": "2026-09-11T22:22:08.701Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-243"}
+{"@timestamp": "2026-09-11T22:22:13.169Z", "level": "INFO", "message": "cache hit", "requestId": "req-244", "service": "search", "userId": "user-40"}
+{"@timestamp": "2026-09-11T22:22:21.004Z", "level": "ERROR", "message": "authentication rejected: invalid token", "requestId": "req-245", "service": "billing", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:22:27.302Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-246", "durationMs": 2297, "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:22:31.908Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-247"}
+{"@timestamp": "2026-09-11T22:22:40.724Z", "level": "INFO", "message": "request completed", "requestId": "req-248"}
+{"@timestamp": "2026-09-11T22:22:44.982Z", "level": "ERROR", "message": "unhandled exception in worker", "requestId": "req-249", "durationMs": 3926, "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:22:52.538Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-250"}
+{"@timestamp": "2026-09-11T22:22:57.211Z", "level": "ERROR", "message": "timeout waiting for upstream", "requestId": "req-251", "service": "notifications", "userId": "user-42"}
+{"@timestamp": "2026-09-11T22:23:04.319Z", "level": "INFO", "message": "request completed", "requestId": "req-252", "service": "notifications"}
+{"@timestamp": "2026-09-11T22:23:10.719Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-253", "userId": "user-2"}
+{"@timestamp": "2026-09-11T22:23:12.837Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-254", "service": "search"}
+{"@timestamp": "2026-09-11T22:23:21.163Z", "level": "INFO", "message": "health check ok", "requestId": "req-255", "service": "auth", "userId": "user-22"}
+{"@timestamp": "2026-09-11T22:23:25.691Z", "level": "INFO", "message": "config reloaded", "requestId": "req-256", "service": "notifications"}
+{"@timestamp": "2026-09-11T22:23:29.346Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-257", "service": "notifications", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:23:35.116Z", "level": "INFO", "message": "request completed", "requestId": "req-258"}
+{"@timestamp": "2026-09-11T22:23:43.656Z", "level": "ERROR", "message": "timeout waiting for upstream", "requestId": "req-259"}
+{"@timestamp": "2026-09-11T22:23:49.596Z", "level": "WARN", "message": "memory usage above 80%", "requestId": "req-260", "service": "gateway", "userId": "user-16", "durationMs": 1500}
+{"@timestamp": "2026-09-11T22:23:57.024Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-261"}
+{"@timestamp": "2026-09-11T22:24:00.592Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-262", "service": "gateway", "userId": "user-29"}
+{"@timestamp": "2026-09-11T22:24:08.731Z", "level": "INFO", "message": "session refreshed", "requestId": "req-263"}
+{"@timestamp": "2026-09-11T22:24:17.231Z", "level": "INFO", "message": "request completed", "requestId": "req-264", "durationMs": 268}
+{"@timestamp": "2026-09-11T22:24:21.030Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-265", "body": "{\"page\": 2, \"filter\": \"all\"}"}
+{"@timestamp": "2026-09-11T22:24:27.585Z", "level": "INFO", "message": "background job scheduled", "requestId": "req-266", "durationMs": 2028}
+{"@timestamp": "2026-09-11T22:24:35.854Z", "level": "INFO", "message": "request completed", "requestId": "req-267", "service": "auth", "durationMs": 2873}
+{"@timestamp": "2026-09-11T22:24:43.023Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-268"}
+{"@timestamp": "2026-09-11T22:24:52.195Z", "level": "INFO", "message": "health check ok", "requestId": "req-269", "service": "billing"}
+{"@timestamp": "2026-09-11T22:24:56.180Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-270", "durationMs": 1088}
+{"@timestamp": "2026-09-11T22:25:00.959Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-271", "service": "notifications", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:25:03.371Z", "level": "WARN", "message": "rate limit approaching", "requestId": "req-272"}
+{"@timestamp": "2026-09-11T22:25:06.119Z", "level": "DEBUG", "message": "exiting handler", "requestId": "req-273"}
+{"@timestamp": "2026-09-11T22:25:14.393Z", "level": "INFO", "message": "health check ok", "requestId": "req-274", "service": "notifications", "userId": "user-32"}
+{"@timestamp": "2026-09-11T22:25:15.494Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-275", "service": "gateway", "durationMs": 3505, "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:25:20.656Z", "level": "INFO", "message": "request completed", "requestId": "req-276", "userId": "user-24"}
+{"@timestamp": "2026-09-11T22:25:26.399Z", "level": "INFO", "message": "session refreshed", "requestId": "req-277", "durationMs": 3907, "body": "{\"page\": 4, \"filter\": \"archived\"}"}
+{"@timestamp": "2026-09-11T22:25:27.407Z", "level": "INFO", "message": "request completed", "requestId": "req-278", "durationMs": 581}
+{"@timestamp": "2026-09-11T22:25:29.512Z", "level": "INFO", "message": "connection acquired from pool", "requestId": "req-279", "userId": "user-50"}
+{"@timestamp": "2026-09-11T22:25:32.582Z", "level": "WARN", "message": "memory usage above 80%", "requestId": "req-280", "service": "gateway"}
+{"@timestamp": "2026-09-11T22:25:40.212Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-281", "userId": "user-7", "durationMs": 1009, "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:25:47.022Z", "level": "INFO", "message": "cache miss", "requestId": "req-282", "service": "auth", "userId": "user-39"}
+{"@timestamp": "2026-09-11T22:25:48.890Z", "level": "ERROR", "message": "timeout waiting for upstream", "requestId": "req-283", "service": "notifications", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:25:53.396Z", "level": "DEBUG", "message": "evaluating feature flag", "requestId": "req-284", "service": "notifications", "userId": "user-1"}
+{"@timestamp": "2026-09-11T22:26:00.770Z", "level": "WARN", "message": "retrying upstream request (attempt 2/3)", "requestId": "req-285", "body": "{\"page\": 2, \"filter\": \"active\"}"}
+{"@timestamp": "2026-09-11T22:26:02.714Z", "level": "INFO", "message": "session refreshed", "requestId": "req-286"}
+{"@timestamp": "2026-09-11T22:26:05.369Z", "level": "WARN", "message": "memory usage above 80%", "requestId": "req-287", "userId": "user-20", "durationMs": 1665}
+{"@timestamp": "2026-09-11T22:26:11.769Z", "level": "WARN", "message": "slow query detected", "requestId": "req-288", "service": "search", "body": "{\"page\": 2, \"filter\": \"all\"}"}
+{"@timestamp": "2026-09-11T22:26:13.085Z", "level": "ERROR", "message": "unhandled exception in worker", "requestId": "req-289", "service": "gateway", "durationMs": 2841}
+{"@timestamp": "2026-09-11T22:26:16.465Z", "level": "INFO", "message": "health check ok", "requestId": "req-290", "userId": "user-2", "durationMs": 3518}
+{"@timestamp": "2026-09-11T22:26:18.973Z", "level": "DEBUG", "message": "query plan computed", "requestId": "req-291", "service": "search", "durationMs": 1289}
+{"@timestamp": "2026-09-11T22:26:21.206Z", "level": "WARN", "message": "slow query detected", "requestId": "req-292", "service": "auth", "userId": "user-31"}
+{"@timestamp": "2026-09-11T22:26:22.772Z", "level": "ERROR", "message": "failed to serialize response", "requestId": "req-293", "service": "gateway", "stackTrace": "java.lang.NullPointerException\n\tat com.example.App.handle(App.java:42)\n\tat com.example.Router.dispatch(Router.java:101)"}
+{"@timestamp": "2026-09-11T22:26:32.461Z", "level": "INFO", "message": "cache hit", "requestId": "req-294", "service": "notifications", "body": "{\"page\": 8, \"filter\": \"all\"}"}
+{"@timestamp": "2026-09-11T22:26:37.796Z", "level": "INFO", "message": "config reloaded", "requestId": "req-295", "service": "billing", "userId": "user-37"}
+{"@timestamp": "2026-09-11T22:26:44.401Z", "level": "DEBUG", "message": "entered handler", "requestId": "req-296"}
+{"@timestamp": "2026-09-11T22:26:45.639Z", "level": "WARN", "message": "rate limit approaching", "requestId": "req-297", "durationMs": 2745, "body": "{\"page\": 7, \"filter\": \"archived\"}"}

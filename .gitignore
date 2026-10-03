@@ -1,0 +1,5 @@
+/target
+# Generated large test logs (keep the small checked-in fixtures only)
+log_examples/big_*.log
+# Machine-local Claude Code settings
+.claude/settings.local.json

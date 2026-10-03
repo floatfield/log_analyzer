@@ -1,0 +1,11 @@
+[package]
+name = "log_analyzer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.33.3"
+egui_extras = "0.33.3"
+memmap2 = "0.9.11"
+rfd = "0.17.2"
+serde_json = "1.0.151"

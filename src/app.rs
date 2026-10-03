@@ -1,0 +1,1185 @@
+//! Application state and UI: file opening, background indexing/scanning,
+//! the virtualized log table, column configuration, and the query input.
+
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::fs::File;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
+
+use eframe::egui;
+use egui_extras::Column;
+use memmap2::Mmap;
+use serde_json::Value;
+
+use crate::log_file::{self, IncrementalIndexer, IndexData};
+use crate::query::{self, Query};
+
+/// How many bytes the incremental indexer scans per pass.
+const INDEX_CHUNK_BYTES: usize = 4 << 20;
+/// Lines scanned between progress publishes / lock acquisitions.
+const SCAN_BATCH: usize = 4096;
+/// Query debounce interval (design D9).
+const QUERY_DEBOUNCE: Duration = Duration::from_millis(250);
+/// Rows the parse cache holds (design D3).
+const PARSE_CACHE_CAPACITY: usize = 4096;
+/// Rendered cell text is truncated beyond this many characters.
+const MAX_CELL_CHARS: usize = 5000;
+/// Default visible columns when a file opens.
+const DEFAULT_COLUMNS: [&str; 3] = ["@timestamp", "level", "message"];
+
+type SharedIndex = Arc<RwLock<IndexData>>;
+type SharedFields = Arc<Mutex<BTreeSet<String>>>;
+
+/// A successfully opened, memory-mapped log file plus its shared state.
+pub struct LoadedFile {
+    pub path: PathBuf,
+    pub map: Arc<Mmap>,
+    pub index: SharedIndex,
+    pub fields: SharedFields,
+    /// Cancels the background indexing + field-discovery jobs.
+    pub open_cancel: Arc<AtomicBool>,
+    /// User-selected visible columns, in display order.
+    pub visible_columns: Vec<String>,
+    /// Set once default columns were picked from discovered fields, so later
+    /// user edits are never overwritten.
+    pub defaults_applied: bool,
+}
+
+impl LoadedFile {
+    /// Memory-map `path`. Indexing and field discovery are started separately
+    /// by [`LogAnalyzerApp::spawn_open_jobs`]; the shared index starts empty.
+    pub fn open(path: &Path) -> io::Result<Self> {
+        let file = File::open(path)?;
+        // Safety-free variant: read-only mapping of a regular file.
+        let map = unsafe { Mmap::map(&file)? };
+        Ok(Self {
+            path: path.to_path_buf(),
+            map: Arc::new(map),
+            index: Arc::new(RwLock::new(IndexData::default())),
+            fields: Arc::new(Mutex::new(BTreeSet::new())),
+            open_cancel: Arc::new(AtomicBool::new(false)),
+            visible_columns: Vec::new(),
+            defaults_applied: false,
+        })
+    }
+
+    /// True once background indexing has finished.
+    pub fn index_done(&self) -> bool {
+        self.index.read().map(|i| i.done).unwrap_or(false)
+    }
+
+    /// Current line count known to the index.
+    pub fn line_count(&self) -> usize {
+        self.index.read().map(|i| i.line_count()).unwrap_or(0)
+    }
+
+    /// Pick default columns from discovered fields.
+    pub fn apply_default_columns(&mut self) {
+        let fields = self.fields.lock().unwrap();
+        for name in DEFAULT_COLUMNS {
+            if fields.contains(name) {
+                self.visible_columns.push(name.to_owned());
+            }
+        }
+        if self.visible_columns.is_empty() {
+            self.visible_columns = fields.iter().take(3).cloned().collect();
+        }
+    }
+}
+
+/// Handle to a running (or finished) background query scan.
+#[derive(Clone)]
+pub struct ScanHandle {
+    pub line_numbers: Arc<RwLock<Vec<u32>>>,
+    pub scanned: Arc<AtomicUsize>,
+    pub done: Arc<AtomicBool>,
+    pub cancel: Arc<AtomicBool>,
+}
+
+impl ScanHandle {
+    fn new() -> Self {
+        Self {
+            line_numbers: Arc::new(RwLock::new(Vec::new())),
+            scanned: Arc::new(AtomicUsize::new(0)),
+            done: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+/// Which rows the table currently shows.
+#[derive(Clone, Default)]
+pub enum RowSource {
+    #[default]
+    All,
+    Matched(ScanHandle),
+}
+
+impl RowSource {
+    /// Total rows currently visible for this source given the index.
+    pub fn row_count(&self, index: &IndexData) -> usize {
+        match self {
+            RowSource::All => index.line_count(),
+            RowSource::Matched(handle) => handle.line_numbers.read().map(|v| v.len()).unwrap_or(0),
+        }
+    }
+
+    /// Map a table row index to a file line number.
+    pub fn line_number(&self, row: usize, index: &IndexData) -> Option<usize> {
+        match self {
+            RowSource::All => {
+                if row < index.line_count() {
+                    Some(row)
+                } else {
+                    None
+                }
+            }
+            RowSource::Matched(handle) => handle
+                .line_numbers
+                .read()
+                .ok()
+                .and_then(|v| v.get(row).copied())
+                .map(|n| n as usize),
+        }
+    }
+}
+
+/// Core of the background query scan: stream every indexed line, evaluate the
+/// query, collect matching line numbers, and piggyback field discovery
+/// (design D6). Stops early when `cancel` is set.
+pub fn run_query_scan(
+    map: &[u8],
+    index: &IndexData,
+    query: &Query,
+    out: &RwLock<Vec<u32>>,
+    fields: &Mutex<BTreeSet<String>>,
+    cancel: &AtomicBool,
+    scanned: &AtomicUsize,
+) {
+    let needs_text = query.needs_line_text();
+    let mut matches_buffer: Vec<u32> = Vec::new();
+    let mut fields_buffer: Vec<String> = Vec::new();
+    for line in 0..index.line_count() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        if let Some(slice) = index.line_slice(map, line) {
+            let entry = log_file::parse_object(slice);
+            let matched = {
+                let text_owned;
+                let text: &str = if needs_text {
+                    text_owned = String::from_utf8_lossy(slice).into_owned();
+                    &text_owned
+                } else {
+                    ""
+                };
+                query.matches(text, entry.as_ref())
+            };
+            if matched {
+                matches_buffer.push(line as u32);
+            }
+            if let Some(map_obj) = entry {
+                fields_buffer.extend(map_obj.keys().cloned());
+            }
+        }
+        if (line + 1) % SCAN_BATCH == 0 || line + 1 == index.line_count() {
+            if let Ok(mut out_guard) = out.write() {
+                out_guard.append(&mut matches_buffer);
+            }
+            if !fields_buffer.is_empty()
+                && let Ok(mut fields_guard) = fields.lock()
+            {
+                fields_guard.extend(fields_buffer.drain(..));
+            }
+            scanned.store(line + 1, Ordering::Relaxed);
+        }
+    }
+    if let Ok(mut out_guard) = out.write() {
+        out_guard.append(&mut matches_buffer);
+    }
+    scanned.store(index.line_count(), Ordering::Relaxed);
+}
+
+/// Small LRU cache of parsed rows so back-and-forth scrolling avoids
+/// reparsing (design D3).
+struct ParseCache {
+    capacity: usize,
+    entries: HashMap<usize, Option<Arc<serde_json::Map<String, Value>>>>,
+    order: VecDeque<usize>,
+}
+
+impl ParseCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get_or_compute(
+        &mut self,
+        key: usize,
+        compute: impl FnOnce() -> Option<serde_json::Map<String, Value>>,
+    ) -> Option<Arc<serde_json::Map<String, Value>>> {
+        if let Some(hit) = self.entries.get(&key) {
+            let hit = hit.clone();
+            self.touch(key);
+            return hit;
+        }
+        let value = compute().map(Arc::new);
+        if self.entries.len() >= self.capacity
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.entries.remove(&oldest);
+        }
+        self.order.push_back(key);
+        self.entries.insert(key, value.clone());
+        value
+    }
+
+    fn touch(&mut self, key: usize) {
+        if let Some(pos) = self.order.iter().position(|k| *k == key) {
+            self.order.remove(pos);
+            self.order.push_back(key);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+}
+
+/// UI state of the query input.
+struct QueryUi {
+    input: String,
+    /// Input text the current row source was built from.
+    applied_input: String,
+    invalid: Option<String>,
+    last_edit: Option<Instant>,
+}
+
+impl QueryUi {
+    fn new() -> Self {
+        Self {
+            input: String::new(),
+            applied_input: String::new(),
+            invalid: None,
+            last_edit: None,
+        }
+    }
+
+    fn note_edit(&mut self) {
+        self.last_edit = Some(Instant::now());
+    }
+
+    /// Decide what to apply this frame: nothing, the parsed query, or an
+    /// invalid-query notice. Enter (`force`) bypasses the debounce.
+    fn take_pending_apply(&mut self, force: bool) -> Option<Result<Query, String>> {
+        let changed = self.input != self.applied_input;
+        if !changed {
+            return None;
+        }
+        let debounced = self
+            .last_edit
+            .is_some_and(|t| t.elapsed() >= QUERY_DEBOUNCE);
+        if !force && !debounced {
+            return None;
+        }
+        self.applied_input = self.input.clone();
+        self.last_edit = None;
+        let trimmed = self.input.trim();
+        if trimmed.is_empty() {
+            self.invalid = None;
+            return Some(Ok(Query::default()));
+        }
+        match query::parse(trimmed) {
+            Ok(q) => {
+                self.invalid = None;
+                Some(Ok(q))
+            }
+            Err(e) => {
+                self.invalid = Some(e.message.clone());
+                Some(Err(e.message))
+            }
+        }
+    }
+}
+
+/// Everything the table renderer needs, cloned out of the app state up front
+/// to keep borrows simple inside egui closures.
+struct TableView {
+    map: Arc<Mmap>,
+    index: SharedIndex,
+    rows: RowSource,
+    columns: Vec<String>,
+}
+
+pub struct LogAnalyzerApp {
+    file: Option<LoadedFile>,
+    rows: RowSource,
+    query: QueryUi,
+    cache: ParseCache,
+    error: Option<String>,
+}
+
+impl LogAnalyzerApp {
+    pub fn new() -> Self {
+        Self {
+            file: None,
+            rows: RowSource::All,
+            query: QueryUi::new(),
+            cache: ParseCache::new(PARSE_CACHE_CAPACITY),
+            error: None,
+        }
+    }
+
+    /// Apply the outcome of an open attempt. On failure the previously loaded
+    /// state is retained (spec: log-file-access / Opening a log file).
+    /// Default columns are not picked here: field discovery has not run yet,
+    /// so [`LogAnalyzerApp::maybe_apply_defaults`] applies them once fields
+    /// appear.
+    pub fn on_open_result(&mut self, result: io::Result<LoadedFile>) {
+        match result {
+            Ok(file) => {
+                if let Some(old) = self.file.take() {
+                    old.open_cancel.store(true, Ordering::Relaxed);
+                }
+                self.cancel_active_scan();
+                self.rows = RowSource::All;
+                self.query = QueryUi::new();
+                self.cache.clear();
+                self.error = None;
+                self.file = Some(file);
+            }
+            Err(e) => {
+                self.error = Some(format!("failed to open file: {e}"));
+            }
+        }
+    }
+
+    fn cancel_active_scan(&mut self) {
+        if let RowSource::Matched(handle) = &self.rows {
+            handle.cancel.store(true, Ordering::Relaxed);
+        }
+        self.rows = RowSource::All;
+    }
+
+    /// Start background jobs for a freshly opened file: incremental index
+    /// build followed by field discovery (design D2/D6).
+    fn spawn_open_jobs(&mut self) {
+        let Some(file) = &self.file else { return };
+        let map = Arc::clone(&file.map);
+        let index = Arc::clone(&file.index);
+        let fields = Arc::clone(&file.fields);
+        let cancel = Arc::clone(&file.open_cancel);
+        std::thread::spawn(move || {
+            let mut indexer = IncrementalIndexer::new();
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                let finished = {
+                    let mut guard = match index.write() {
+                        Ok(g) => g,
+                        Err(_) => return,
+                    };
+                    indexer.scan_chunk(&map, &mut guard, INDEX_CHUNK_BYTES)
+                };
+                if finished {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            // Field discovery after indexing; batched so the UI sees fields
+            // appear progressively.
+            let line_count = match index.read() {
+                Ok(guard) => guard.line_count(),
+                Err(_) => return,
+            };
+            for batch_start in (0..line_count).step_by(SCAN_BATCH) {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                let index_guard = match index.read() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let batch_end = (batch_start + SCAN_BATCH).min(line_count);
+                let mut fields_guard = match fields.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                for line in batch_start..batch_end {
+                    if let Some(slice) = index_guard.line_slice(&map, line)
+                        && let Some(obj) = log_file::parse_object(slice)
+                    {
+                        fields_guard.extend(obj.keys().cloned());
+                    }
+                }
+                drop(fields_guard);
+                drop(index_guard);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+    }
+
+    /// Open a path from the UI: mmap synchronously (fast), replace state on
+    /// success, report errors without disturbing the current state.
+    pub(crate) fn open_path(&mut self, path: &Path) {
+        let result = LoadedFile::open(path);
+        match &result {
+            Ok(_) => {
+                self.on_open_result(result);
+                self.spawn_open_jobs();
+            }
+            Err(_) => self.on_open_result(result),
+        }
+    }
+
+    /// Start a background scan for `query`, replacing any running one.
+    fn start_query_scan(&mut self, query: Query) {
+        let Some(file) = self.file.as_ref() else {
+            return;
+        };
+        let map = Arc::clone(&file.map);
+        let index = Arc::clone(&file.index);
+        let fields = Arc::clone(&file.fields);
+        self.cancel_active_scan();
+        let handle = ScanHandle::new();
+        let ScanHandle {
+            line_numbers,
+            scanned,
+            done,
+            cancel,
+        } = handle.clone();
+        self.rows = RowSource::Matched(handle);
+        std::thread::spawn(move || {
+            let index_guard = match index.read() {
+                Ok(g) => g,
+                Err(_) => {
+                    done.store(true, Ordering::Relaxed);
+                    return;
+                }
+            };
+            run_query_scan(
+                &map,
+                &index_guard,
+                &query,
+                &line_numbers,
+                &fields,
+                &cancel,
+                &scanned,
+            );
+            done.store(true, Ordering::Relaxed);
+        });
+    }
+
+    /// Show every row (empty/invalid query or cleared input).
+    fn reset_rows_to_all(&mut self) {
+        self.cancel_active_scan();
+    }
+
+    /// Pick default columns once field discovery has produced names. Runs at
+    /// most once per file so user column edits afterwards are preserved.
+    fn maybe_apply_defaults(&mut self) {
+        let should = self
+            .file
+            .as_ref()
+            .is_some_and(|f| !f.defaults_applied && !f.fields.lock().unwrap().is_empty());
+        if should && let Some(file) = self.file.as_mut() {
+            file.defaults_applied = true;
+            file.apply_default_columns();
+        }
+    }
+
+    /// Per-frame work: apply pending queries (debounce or Enter), keep
+    /// repainting while background work is in flight.
+    fn poll(&mut self, ctx: &egui::Context) {
+        self.maybe_apply_defaults();
+        let force = self.enter_pressed_this_frame(ctx);
+        match self.query.take_pending_apply(force) {
+            Some(Ok(q)) => {
+                if q.is_empty() {
+                    self.reset_rows_to_all();
+                } else if self.file.as_ref().is_some_and(LoadedFile::index_done) {
+                    self.start_query_scan(q);
+                }
+                // While indexing is still running the query stays pending:
+                // applied_input was already updated, so re-arm the debounce.
+                else {
+                    self.query.last_edit = Some(Instant::now());
+                    self.query.applied_input = String::new();
+                }
+            }
+            Some(Err(_)) => {
+                // Invalid query: show all rows unfiltered (spec: log-query).
+                self.reset_rows_to_all();
+            }
+            None => {}
+        }
+
+        let mut busy = false;
+        if let Some(file) = &self.file
+            && !file.index_done()
+        {
+            busy = true;
+        }
+        if let RowSource::Matched(handle) = &self.rows
+            && !handle.done.load(Ordering::Relaxed)
+        {
+            busy = true;
+        }
+        if busy {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+    }
+
+    fn enter_pressed_this_frame(&self, ctx: &egui::Context) -> bool {
+        ctx.input(|i| i.key_pressed(egui::Key::Enter))
+    }
+
+    /// Clone the data the table needs for one frame.
+    fn snapshot_view(&self) -> Option<TableView> {
+        let file = self.file.as_ref()?;
+        Some(TableView {
+            map: Arc::clone(&file.map),
+            index: Arc::clone(&file.index),
+            rows: self.rows.clone(),
+            columns: file.visible_columns.clone(),
+        })
+    }
+
+    /// Lines scanned so far by the active query scan, if any.
+    fn scan_progress(&self) -> Option<(usize, bool)> {
+        match &self.rows {
+            RowSource::All => None,
+            RowSource::Matched(handle) => Some((
+                handle.scanned.load(Ordering::Relaxed),
+                handle.done.load(Ordering::Relaxed),
+            )),
+        }
+    }
+}
+
+impl eframe::App for LogAnalyzerApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll(ctx);
+
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("log_analyzer");
+                ui.separator();
+                if ui.button("Open...").clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Log files", &["log", "txt"])
+                        .add_filter("All files", &["*"])
+                        .pick_file()
+                {
+                    self.open_path(&path);
+                }
+                ui.separator();
+                let invalid = self.query.invalid.clone();
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.query.input)
+                        .hint_text("query: level=ERROR timeout")
+                        .desired_width(420.0),
+                );
+                if response.changed() {
+                    self.query.note_edit();
+                }
+                if response.lost_focus() && self.enter_pressed_this_frame(ctx) {
+                    // `poll` on the next frame handles the forced apply via
+                    // the global Enter check.
+                }
+                match &invalid {
+                    Some(message) => {
+                        ui.colored_label(egui::Color32::RED, format!("invalid query: {message}"));
+                    }
+                    None => {
+                        if self.query.input.trim().is_empty() {
+                            ui.weak("showing all rows");
+                        }
+                    }
+                }
+                ui.separator();
+                if let Some(file) = &self.file {
+                    ui.label(file.path.display().to_string());
+                }
+            });
+        });
+
+        egui::SidePanel::right("columns").show(ctx, |ui| {
+            ui.heading("Columns");
+            ui.separator();
+            let discovered: Option<Vec<String>> = self
+                .file
+                .as_ref()
+                .map(|f| f.fields.lock().unwrap().iter().cloned().collect());
+            let Some(discovered) = discovered else {
+                ui.weak("no file open");
+                return;
+            };
+            let visible: Vec<String> = self
+                .file
+                .as_ref()
+                .map(|f| f.visible_columns.clone())
+                .unwrap_or_default();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for name in discovered {
+                    let mut on = visible.contains(&name);
+                    if ui.checkbox(&mut on, name.as_str()).changed()
+                        && let Some(file) = self.file.as_mut()
+                    {
+                        if on {
+                            if !file.visible_columns.contains(&name) {
+                                file.visible_columns.push(name);
+                            }
+                        } else {
+                            file.visible_columns.retain(|c| c != &name);
+                        }
+                    }
+                }
+            });
+        });
+
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if let Some(error) = &self.error {
+                    ui.colored_label(egui::Color32::RED, error);
+                    ui.separator();
+                }
+                if let Some(file) = &self.file {
+                    if !file.index_done() {
+                        ui.label(format!("indexing... {} lines", file.line_count()));
+                    } else {
+                        match self.scan_progress() {
+                            Some((scanned, done)) if !done => {
+                                ui.label(format!(
+                                    "scanning... {scanned}/{} lines",
+                                    file.line_count()
+                                ));
+                            }
+                            _ => {
+                                let shown = self.rows.row_count(&file.index.read().unwrap());
+                                ui.label(format!("{shown} / {} rows", file.line_count()));
+                            }
+                        }
+                    }
+                } else {
+                    ui.weak("open a log file to begin");
+                }
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let Some(view) = self.snapshot_view() else {
+                ui.centered_and_justified(|ui| {
+                    ui.weak("Open a log file to explore it.");
+                });
+                return;
+            };
+            render_table(ui, &view, &mut self.cache);
+        });
+    }
+}
+
+fn render_table(ui: &mut egui::Ui, view: &TableView, cache: &mut ParseCache) {
+    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
+    let row_count = view
+        .index
+        .read()
+        .map(|index| view.rows.row_count(&index))
+        .unwrap_or(0);
+
+    let mut table = egui_extras::TableBuilder::new(ui)
+        .striped(true)
+        .resizable(true)
+        .vscroll(true)
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+
+    // Ensure at least one column exists so raw rows always have somewhere to
+    // render their text.
+    if view.columns.is_empty() {
+        table = table.column(Column::remainder().resizable(false));
+    } else {
+        for (i, _) in view.columns.iter().enumerate() {
+            let column = if i + 1 == view.columns.len() {
+                Column::remainder().resizable(true).clip(true)
+            } else {
+                Column::initial(160.0).resizable(true).clip(true)
+            };
+            table = table.column(column);
+        }
+    }
+
+    let columns = view.columns.clone();
+    table
+        .header(row_height, |mut header| {
+            if columns.is_empty() {
+                header.col(|ui| {
+                    ui.strong("(raw)");
+                });
+            } else {
+                for name in &columns {
+                    header.col(|ui| {
+                        ui.strong(name);
+                    });
+                }
+            }
+        })
+        .body(|body| {
+            body.rows(row_height, row_count, |mut row| {
+                let row_index = row.index();
+                let index_guard = match view.index.read() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let Some(line_no) = view.rows.line_number(row_index, &index_guard) else {
+                    return;
+                };
+                let Some(slice) = index_guard.line_slice(&view.map, line_no) else {
+                    return;
+                };
+                let entry = cache.get_or_compute(line_no, || log_file::parse_object(slice));
+                let text = String::from_utf8_lossy(slice);
+                let text = truncate_chars(&text, MAX_CELL_CHARS);
+
+                if columns.is_empty() {
+                    row.col(|ui| {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(text.clone()).monospace())
+                                .wrap_mode(egui::TextWrapMode::Truncate),
+                        );
+                    });
+                    return;
+                }
+
+                for (i, column) in columns.iter().enumerate() {
+                    let is_first = i == 0;
+                    row.col(|ui| {
+                        match &entry {
+                            Some(obj) => {
+                                let cell = obj
+                                    .get(column)
+                                    .map(crate::query::field_value_as_text)
+                                    .unwrap_or_default();
+                                ui.add(
+                                    egui::Label::new(truncate_chars(&cell, MAX_CELL_CHARS))
+                                        .wrap_mode(egui::TextWrapMode::Truncate),
+                                );
+                            }
+                            None => {
+                                // Raw line: full text in the first visible
+                                // column, dimmed (design D7).
+                                if is_first {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(text.clone()).weak().monospace(),
+                                        )
+                                        .wrap_mode(egui::TextWrapMode::Truncate),
+                                    );
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+        });
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        text.to_owned()
+    } else {
+        let truncated: String = text.chars().take(max_chars).collect();
+        format!("{truncated}...")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::atomic::AtomicUsize;
+
+    fn temp_file(name: &str, contents: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("log_analyzer_test_{name}"));
+        let mut file = File::create(&path).unwrap();
+        file.write_all(contents).unwrap();
+        path
+    }
+
+    fn fixture_index(bytes: &[u8]) -> IndexData {
+        IndexData::build(bytes)
+    }
+
+    // ---- 4.2: query scan worker ----
+
+    #[test]
+    fn query_scan_collects_expected_line_numbers() {
+        // Note: a substring term matches the raw line text, so line 3's
+        // message deliberately avoids the word "timeout".
+        let bytes = b"{\"level\": \"INFO\"}\n\
+                      noise line with timeout\n\
+                      {\"level\": \"ERROR\", \"message\": \"timeout in upstream\"}\n\
+                      {\"level\": \"ERROR\", \"message\": \"no delays here\"}\n\
+                      PANIC: timeout\n";
+        let path = temp_file("scan_fixture.log", bytes);
+        let file = LoadedFile::open(&path).unwrap();
+        let index = fixture_index(bytes);
+        let query = query::parse("level=ERROR timeout").unwrap();
+        let out = RwLock::new(Vec::new());
+        let fields = Mutex::new(BTreeSet::new());
+        run_query_scan(
+            &file.map,
+            &index,
+            &query,
+            &out,
+            &fields,
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        );
+        assert_eq!(*out.write().unwrap(), vec![2]);
+
+        // Substring-only query also hits raw lines.
+        let substring = query::parse("timeout").unwrap();
+        let out2 = RwLock::new(Vec::new());
+        run_query_scan(
+            &file.map,
+            &index,
+            &substring,
+            &out2,
+            &fields,
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        );
+        assert_eq!(*out2.write().unwrap(), vec![1, 2, 4]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn query_scan_respects_cancel_and_piggybacks_fields() {
+        let bytes = b"{\"level\": \"INFO\", \"service\": \"a\"}\n{\"level\": \"ERROR\"}\n";
+        let path = temp_file("scan_cancel_fixture.log", bytes);
+        let file = LoadedFile::open(&path).unwrap();
+        let index = fixture_index(bytes);
+        let q = query::parse("level=ERROR").unwrap();
+        let out = RwLock::new(Vec::new());
+        let fields = Mutex::new(BTreeSet::new());
+
+        // Pre-cancelled: nothing is collected.
+        run_query_scan(
+            &file.map,
+            &index,
+            &q,
+            &out,
+            &fields,
+            &AtomicBool::new(true),
+            &AtomicUsize::new(0),
+        );
+        assert!(out.write().unwrap().is_empty());
+
+        // Un-cancelled run collects fields as a side effect (design D6).
+        run_query_scan(
+            &file.map,
+            &index,
+            &q,
+            &out,
+            &fields,
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        );
+        assert_eq!(*out.write().unwrap(), vec![1]);
+        let fields = fields.lock().unwrap();
+        assert!(fields.contains("level") && fields.contains("service"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ---- 4.3: open-failure retention ----
+
+    #[test]
+    fn open_failure_keeps_previous_file() {
+        let bytes = b"{\"a\": 1}\n";
+        let path = temp_file("retention.log", bytes);
+        let app = &mut LogAnalyzerApp::new();
+        app.on_open_result(Ok(LoadedFile::open(&path).unwrap()));
+        let first_path = app.file.as_ref().unwrap().path.clone();
+
+        app.on_open_result(Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "denied",
+        )));
+        assert_eq!(app.file.as_ref().unwrap().path, first_path);
+        assert!(app.error.is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn open_success_replaces_state_and_sets_defaults() {
+        let bytes = b"{\"@timestamp\": \"t\", \"level\": \"INFO\", \"message\": \"m\"}\n";
+        let path = temp_file("defaults.log", bytes);
+        let app = &mut LogAnalyzerApp::new();
+        app.on_open_result(Ok(LoadedFile::open(&path).unwrap()));
+        // Defaults cannot be picked at open time; they are applied once field
+        // discovery has produced names (mirrors the flow in `poll`).
+        {
+            let file = app.file.as_mut().unwrap();
+            let mut fields = file.fields.lock().unwrap();
+            fields.insert("@timestamp".to_owned());
+            fields.insert("level".to_owned());
+            fields.insert("message".to_owned());
+        }
+        app.maybe_apply_defaults();
+        assert_eq!(
+            app.file.as_ref().unwrap().visible_columns,
+            vec!["@timestamp", "level", "message"]
+        );
+        // Later frames (and user edits) are not clobbered: defaults apply once.
+        app.maybe_apply_defaults();
+        assert_eq!(
+            app.file.as_ref().unwrap().visible_columns,
+            vec!["@timestamp", "level", "message"]
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ---- 4.1: open flow with background indexing + discovery ----
+
+    #[test]
+    fn open_path_indexes_fixture_and_discovers_fields() {
+        let path = std::path::Path::new("log_exaples/first.log");
+        let app = &mut LogAnalyzerApp::new();
+        app.open_path(path);
+        let file = app.file.as_ref().expect("file loaded");
+
+        // Wait for the background index build (progressive availability:
+        // line_count grows before `done` flips).
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !file.index_done() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(file.index_done(), "indexing finished");
+        let lines = file.line_count();
+        assert!(lines >= 300, "fixture has ~306 lines, got {lines}");
+
+        // Wait for field discovery, then defaults.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while file.fields.lock().unwrap().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        app.maybe_apply_defaults();
+        let file = app.file.as_ref().unwrap();
+        let fields = file.fields.lock().unwrap();
+        for expected in ["@timestamp", "level", "message", "durationMs"] {
+            assert!(fields.contains(expected), "missing field {expected}");
+        }
+        assert_eq!(file.visible_columns, vec!["@timestamp", "level", "message"]);
+        // First and last line are readable through the shared index.
+        let index = file.index.read().unwrap();
+        let first = index.line_slice(&file.map, 0).unwrap();
+        assert!(std::str::from_utf8(first).is_ok());
+    }
+
+    // ---- 6.1/6.2: query input state machine ----
+
+    #[test]
+    fn query_ui_debounce_enter_invalid_and_clear() {
+        let mut q = QueryUi::new();
+        // Nothing typed: nothing to apply.
+        assert!(q.take_pending_apply(false).is_none());
+
+        // Edit within the debounce window: no apply yet.
+        q.input = "field=".into();
+        q.note_edit();
+        assert!(q.take_pending_apply(false).is_none());
+
+        // Enter forces an apply: invalid feedback is surfaced.
+        let applied = q.take_pending_apply(true).unwrap();
+        assert!(applied.is_err());
+        assert!(q.invalid.is_some());
+
+        // Invalid query means all rows stay visible (no scan was started);
+        // clearing the input restores the all-rows state cleanly.
+        q.input.clear();
+        q.note_edit();
+        let applied = q.take_pending_apply(true).unwrap();
+        assert!(applied.unwrap().is_empty());
+        assert!(q.invalid.is_none());
+
+        // Debounce path: after the interval elapses, the edit applies itself.
+        q.input = "level=ERROR".into();
+        q.note_edit();
+        std::thread::sleep(QUERY_DEBOUNCE + Duration::from_millis(20));
+        let applied = q.take_pending_apply(false).unwrap();
+        assert!(!applied.unwrap().is_empty());
+    }
+
+    // ---- 5.1: row source mapping ----
+
+    #[test]
+    fn row_source_maps_rows_to_line_numbers() {
+        let index = fixture_index(b"a\nbb\nccc");
+        // All source: identity mapping.
+        let all = RowSource::All;
+        assert_eq!(all.row_count(&index), 3);
+        assert_eq!(all.line_number(0, &index), Some(0));
+        assert_eq!(all.line_number(2, &index), Some(2));
+        assert_eq!(all.line_number(3, &index), None);
+
+        // Matched source: maps through the collected line numbers.
+        let handle = ScanHandle::new();
+        handle.line_numbers.write().unwrap().extend([0, 2]);
+        let matched = RowSource::Matched(handle);
+        assert_eq!(matched.row_count(&index), 2);
+        assert_eq!(matched.line_number(0, &index), Some(0));
+        assert_eq!(matched.line_number(1, &index), Some(2));
+        assert_eq!(matched.line_number(2, &index), None);
+    }
+
+    // ---- 7.2: scale verification (ignored by default) ----
+    //
+    // Generate the fixture first:
+    //   python3 /tmp/gen_big_log.py /tmp/log_analyzer_synth.log 2
+    // Run with:
+    //   cargo test --release -- --ignored --nocapture large_file
+
+    #[test]
+    #[ignore = "scale verification; generate /tmp/log_analyzer_synth.log first"]
+    fn large_file_open_scan_and_cancel_behave_per_spec() {
+        let path = std::path::Path::new("/tmp/log_analyzer_synth.log");
+        let mut app = LogAnalyzerApp::new();
+        let t_open = Instant::now();
+        app.open_path(path);
+        let open_elapsed = t_open.elapsed();
+        let file = app.file.as_ref().unwrap();
+
+        // Progressive availability: rows appear well before indexing finishes.
+        let t_first = Instant::now();
+        while file.line_count() == 0 {
+            assert!(
+                t_first.elapsed() < Duration::from_secs(30),
+                "no rows became available while indexing"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let first_rows_elapsed = t_first.elapsed();
+
+        let t_index = Instant::now();
+        while !file.index_done() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let index_elapsed = t_index.elapsed();
+        let lines = file.line_count();
+
+        let t_fields = Instant::now();
+        while app.file.as_ref().unwrap().fields.lock().unwrap().is_empty() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let fields_elapsed = t_fields.elapsed();
+        app.maybe_apply_defaults();
+        assert!(!app.file.as_ref().unwrap().visible_columns.is_empty());
+
+        // Query scan on a background thread (as production does).
+        let file = app.file.as_ref().unwrap();
+        let q = query::parse("level=ERROR timeout").unwrap();
+        let handle = ScanHandle::new();
+        let map = Arc::clone(&file.map);
+        let index = Arc::clone(&file.index);
+        let fields_shared = Arc::clone(&file.fields);
+        let worker = handle.clone();
+        let t_scan = Instant::now();
+        std::thread::spawn(move || {
+            let guard = index.read().unwrap();
+            run_query_scan(
+                &map,
+                &guard,
+                &q,
+                &worker.line_numbers,
+                &fields_shared,
+                &worker.cancel,
+                &worker.scanned,
+            );
+            worker.done.store(true, Ordering::Relaxed);
+        });
+        while !handle.done.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let scan_elapsed = t_scan.elapsed();
+        let matches = handle.line_numbers.read().unwrap().len();
+
+        // Cancellation: start another scan, cancel mid-flight, require a
+        // prompt stop (spec: no freeze; cancellation aborts the scan).
+        let handle2 = ScanHandle::new();
+        let map = Arc::clone(&file.map);
+        let index = Arc::clone(&file.index);
+        let fields_shared = Arc::clone(&file.fields);
+        let q2 = query::parse("timeout").unwrap();
+        let worker = handle2.clone();
+        std::thread::spawn(move || {
+            let guard = index.read().unwrap();
+            run_query_scan(
+                &map,
+                &guard,
+                &q2,
+                &worker.line_numbers,
+                &fields_shared,
+                &worker.cancel,
+                &worker.scanned,
+            );
+            worker.done.store(true, Ordering::Relaxed);
+        });
+        let target = lines / 10;
+        while handle2.scanned.load(Ordering::Relaxed) < target {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let t_cancel = Instant::now();
+        handle2.cancel.store(true, Ordering::Relaxed);
+        while !handle2.done.load(Ordering::Relaxed) {
+            assert!(
+                t_cancel.elapsed() < Duration::from_secs(5),
+                "cancelled scan did not stop promptly"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let cancel_elapsed = t_cancel.elapsed();
+
+        println!("mmap open:            {open_elapsed:?}");
+        println!("first rows available: {first_rows_elapsed:?}");
+        println!("index build:          {index_elapsed:?} ({lines} lines)");
+        println!("first fields found:   {fields_elapsed:?}");
+        println!("query scan complete:  {scan_elapsed:?} ({matches} matches)");
+        println!("cancel stop latency:  {cancel_elapsed:?}");
+
+        assert!(
+            first_rows_elapsed < Duration::from_secs(1),
+            "rows must become available progressively, quickly"
+        );
+        assert!(
+            cancel_elapsed < Duration::from_secs(2),
+            "cancellation must stop the scan promptly"
+        );
+    }
+
+    // ---- parse cache ----
+
+    #[test]
+    fn parse_cache_evicts_least_recently_used() {
+        let mut cache = ParseCache::new(2);
+        let a = cache.get_or_compute(1, || {
+            Some(serde_json::from_str::<serde_json::Map<String, Value>>(r#"{"k":"1"}"#).unwrap())
+        });
+        cache.get_or_compute(2, || None);
+        // Touch key 1 so key 2 becomes the LRU entry.
+        assert!(cache.get_or_compute(1, || None).is_some());
+        cache.get_or_compute(3, || None);
+        // Key 1 survived; key 2 was evicted.
+        assert!(cache.entries.contains_key(&1));
+        assert!(!cache.entries.contains_key(&2));
+        assert!(a.is_some());
+    }
+}
