@@ -82,6 +82,17 @@ egui_extras `TableBuilder` has no row-background API, so for a highlighted row e
 - Toolbar star toggle for the open file (filled/unfilled reflects state).
 - Favorites dropdown from the toolbar listing favorites; each row is click-to-open plus a remove affordance. Opening uses the existing `open_path` flow, so restore-of-columns applies automatically.
 
+### D7 — Reload reuses the open flow
+
+The reload button calls the existing `open_path` on the current file's stored path — no new indexing, scanning, or cancellation machinery. Consequences, all inherited from that flow:
+
+- Any in-flight scan is cancelled before the rebuild starts; index and field discovery run fresh over the re-read contents.
+- Per-file columns are restored from the workspace keyed by the unchanged path (same as a reopen), so the user's column selection survives reload.
+- The query input keeps its text and continues filtering the reloaded rows (decided: preserved — the tail-and-filter workflow expects the filter to survive a refresh); scroll resets to the top as with any open.
+- Disabled when no file is open. If the file vanished or became unreadable, the failure surfaces through the existing open-failure handling.
+
+Alternatives considered: filesystem watching with auto-refresh (out of scope — manual control requested; a watcher is a separate change); diff-based partial re-index (complexity unjustified given a full re-index of even a 2GB file costs ~2.4s).
+
 ## Risks / Trade-offs
 
 - [Parser rewrite regresses existing queries] → keep current `query.rs` tests green untouched; add grammar cases (precedence, groups, quotes) as unit tests before rewiring.
@@ -90,10 +101,11 @@ egui_extras `TableBuilder` has no row-background API, so for a highlighted row e
 - [Tint readability under light theme] → translucent alpha fills; verified visually via the screenshot flow used in the previous change.
 - [`dirs` config dir unavailable (exotic platforms)] → if `config_dir()` returns `None`, persistence becomes a no-op in-memory workspace; app functions normally.
 - [Favorites to deleted files] → open follows existing failure handling (error toast); removal from the list still possible.
+- [Reload on a deleted/rotated file] → failure surfaces via the existing open-error path; reload then behaves like any failed open, with the error shown to the user.
 
 ## Migration Plan
 
-Single binary; no data migration. `workspace.json` is created on first mutation. Rollback = previous binary ignores the file. No spec changes to file access or indexing.
+Single binary; no data migration. `workspace.json` is created on first mutation. Rollback = previous binary ignores the file. File-access mechanics (open, indexing, cancellation) are reused, not changed; reload only adds a new trigger for the existing flow.
 
 ## Open Questions
 

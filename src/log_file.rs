@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn scan_fields_finds_fixture_fields() {
-        let bytes = std::fs::read("log_exaples/first.log").expect("fixture file readable");
+        let bytes = std::fs::read("log_examples/first.log").expect("fixture file readable");
         let data = IndexData::build(&bytes);
         let mut fields = BTreeSet::new();
         scan_fields(

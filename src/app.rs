@@ -15,6 +15,7 @@ use memmap2::Mmap;
 use serde_json::Value;
 
 use crate::log_file::{self, IncrementalIndexer, IndexData};
+use crate::persistence::{self, Workspace};
 use crate::query::{self, Query};
 
 /// How many bytes the incremental indexer scans per pass.
@@ -29,6 +30,11 @@ const PARSE_CACHE_CAPACITY: usize = 4096;
 const MAX_CELL_CHARS: usize = 5000;
 /// Default visible columns when a file opens.
 const DEFAULT_COLUMNS: [&str; 3] = ["@timestamp", "level", "message"];
+/// Translucent row tint for `error`-level rows (spec: log-table-view); light
+/// alpha keeps text readable over the light theme.
+const ERROR_ROW_TINT: egui::Color32 = egui::Color32::from_rgba_unmultiplied_const(220, 50, 50, 60);
+/// Translucent row tint for `warn`/`warning`-level rows.
+const WARN_ROW_TINT: egui::Color32 = egui::Color32::from_rgba_unmultiplied_const(235, 185, 30, 60);
 
 type SharedIndex = Arc<RwLock<IndexData>>;
 type SharedFields = Arc<Mutex<BTreeSet<String>>>;
@@ -277,6 +283,16 @@ impl QueryUi {
         self.last_edit = Some(Instant::now());
     }
 
+    /// One-action reset (spec: log-query / Query reset control): clears the
+    /// input and any invalid-query indication. Callers restore the all-rows
+    /// view via [`LogAnalyzerApp::reset_rows_to_all`].
+    fn reset(&mut self) {
+        self.input.clear();
+        self.applied_input.clear();
+        self.invalid = None;
+        self.last_edit = None;
+    }
+
     /// Decide what to apply this frame: nothing, the parsed query, or an
     /// invalid-query notice. Enter (`force`) bypasses the debounce.
     fn take_pending_apply(&mut self, force: bool) -> Option<Result<Query, String>> {
@@ -308,6 +324,19 @@ impl QueryUi {
             }
         }
     }
+
+    /// Time until a pending edit's debounce elapses, if an apply is still
+    /// owed (used to keep the UI repainting without further input events).
+    fn pending_debounce_wait(&self) -> Option<Duration> {
+        if self.input == self.applied_input {
+            return None;
+        }
+        Some(
+            self.last_edit
+                .map(|t| QUERY_DEBOUNCE.saturating_sub(t.elapsed()))
+                .unwrap_or(QUERY_DEBOUNCE),
+        )
+    }
 }
 
 /// Everything the table renderer needs, cloned out of the app state up front
@@ -325,25 +354,98 @@ pub struct LogAnalyzerApp {
     query: QueryUi,
     cache: ParseCache,
     error: Option<String>,
+    /// Columns-panel field-name filter text (session-only, spec:
+    /// log-table-view).
+    column_filter: String,
+    /// Persisted workspace: favorites and per-file column selections (spec:
+    /// workspace-persistence).
+    workspace: Workspace,
+    /// Where the workspace persists; `None` degrades to in-memory only.
+    workspace_path: Option<PathBuf>,
 }
 
 impl LogAnalyzerApp {
     pub fn new() -> Self {
+        Self::with_workspace(persistence::default_config_path())
+    }
+
+    /// Constructor with an explicit workspace file location; `None` gives an
+    /// in-memory workspace (design D4). Tests inject temp paths.
+    fn with_workspace(config_path: Option<PathBuf>) -> Self {
+        let workspace = config_path
+            .as_deref()
+            .map(Workspace::load)
+            .unwrap_or_default();
         Self {
             file: None,
             rows: RowSource::All,
             query: QueryUi::new(),
             cache: ParseCache::new(PARSE_CACHE_CAPACITY),
             error: None,
+            column_filter: String::new(),
+            workspace,
+            workspace_path: config_path,
         }
+    }
+
+    /// Write the workspace through to disk; failures are non-fatal.
+    fn save_workspace(&self) {
+        if let Some(path) = &self.workspace_path
+            && let Err(e) = self.workspace.save(path)
+        {
+            eprintln!("failed to save workspace: {e}");
+        }
+    }
+
+    /// Path key of the currently open file, if any.
+    fn current_file_key(&self) -> Option<String> {
+        self.file.as_ref().map(|f| persistence::path_key(&f.path))
+    }
+
+    /// Toggle the favorite flag for the open file and persist; returns the
+    /// new state (spec: workspace-persistence / Managing favorites).
+    fn toggle_favorite_current(&mut self) -> Option<bool> {
+        let key = self.current_file_key()?;
+        let now_favorite = self.workspace.toggle_favorite(&key);
+        self.save_workspace();
+        Some(now_favorite)
+    }
+
+    /// Remove a favorite by path key and persist.
+    fn remove_favorite(&mut self, key: &str) {
+        self.workspace.remove_favorite(key);
+        self.save_workspace();
+    }
+
+    /// Show/hide a column for the open file and write the selection through
+    /// to the workspace (spec: workspace-persistence).
+    fn set_column_visible(&mut self, name: &str, on: bool) {
+        let update = {
+            let Some(file) = self.file.as_mut() else {
+                return;
+            };
+            if on {
+                if !file.visible_columns.iter().any(|c| c == name) {
+                    file.visible_columns.push(name.to_owned());
+                }
+            } else {
+                file.visible_columns.retain(|c| c != name);
+            }
+            (
+                persistence::path_key(&file.path),
+                file.visible_columns.clone(),
+            )
+        };
+        self.workspace.set_columns(&update.0, update.1);
+        self.save_workspace();
     }
 
     /// Apply the outcome of an open attempt. On failure the previously loaded
     /// state is retained (spec: log-file-access / Opening a log file).
-    /// Default columns are not picked here: field discovery has not run yet,
-    /// so [`LogAnalyzerApp::maybe_apply_defaults`] applies them once fields
+    /// Column selection is not picked here: field discovery has not run yet,
+    /// so [`LogAnalyzerApp::maybe_apply_columns`] applies it once fields
     /// appear.
-    pub fn on_open_result(&mut self, result: io::Result<LoadedFile>) {
+    fn on_open_result_inner(&mut self, result: io::Result<LoadedFile>, preserve_query: bool) {
         match result {
             Ok(file) => {
                 if let Some(old) = self.file.take() {
@@ -351,7 +453,9 @@ impl LogAnalyzerApp {
                 }
                 self.cancel_active_scan();
                 self.rows = RowSource::All;
-                self.query = QueryUi::new();
+                if !preserve_query {
+                    self.query = QueryUi::new();
+                }
                 self.cache.clear();
                 self.error = None;
                 self.file = Some(file);
@@ -431,13 +535,32 @@ impl LogAnalyzerApp {
     /// Open a path from the UI: mmap synchronously (fast), replace state on
     /// success, report errors without disturbing the current state.
     pub(crate) fn open_path(&mut self, path: &Path) {
+        self.open_path_inner(path, false);
+    }
+
+    /// Re-open the current file from disk (spec: log-file-access / Reloading
+    /// the current file). The active query text is kept and re-applied to the
+    /// reloaded contents once indexing completes.
+    fn reload_current(&mut self) {
+        let Some(path) = self.file.as_ref().map(|f| f.path.clone()) else {
+            return;
+        };
+        self.open_path_inner(&path, true);
+    }
+
+    fn open_path_inner(&mut self, path: &Path, preserve_query: bool) {
         let result = LoadedFile::open(path);
-        match &result {
-            Ok(_) => {
-                self.on_open_result(result);
-                self.spawn_open_jobs();
+        let opened = result.is_ok();
+        self.on_open_result_inner(result, preserve_query);
+        if opened {
+            self.spawn_open_jobs();
+            if preserve_query && !self.query.input.trim().is_empty() {
+                // Re-arm the query so `poll` re-applies it after indexing
+                // finishes (its retry loop keeps the query pending while the
+                // index is still building).
+                self.query.applied_input = String::new();
+                self.query.last_edit = Some(Instant::now());
             }
-            Err(_) => self.on_open_result(result),
         }
     }
 
@@ -484,23 +607,39 @@ impl LogAnalyzerApp {
         self.cancel_active_scan();
     }
 
-    /// Pick default columns once field discovery has produced names. Runs at
-    /// most once per file so user column edits afterwards are preserved.
-    fn maybe_apply_defaults(&mut self) {
+    /// Apply the per-file column selection once field discovery has produced
+    /// names: the selection saved in the workspace when present, otherwise
+    /// defaults (spec: workspace-persistence / Restoring saved columns). Runs
+    /// at most once per file so user column edits afterwards are preserved.
+    fn maybe_apply_columns(&mut self) {
         let should = self
             .file
             .as_ref()
             .is_some_and(|f| !f.defaults_applied && !f.fields.lock().unwrap().is_empty());
-        if should && let Some(file) = self.file.as_mut() {
+        if !should {
+            return;
+        }
+        let saved = self
+            .file
+            .as_ref()
+            .map(|f| {
+                let key = persistence::path_key(&f.path);
+                self.workspace.columns_for(&key).cloned()
+            })
+            .unwrap_or_default();
+        if let Some(file) = self.file.as_mut() {
             file.defaults_applied = true;
-            file.apply_default_columns();
+            match saved {
+                Some(columns) => file.visible_columns = columns,
+                None => file.apply_default_columns(),
+            }
         }
     }
 
     /// Per-frame work: apply pending queries (debounce or Enter), keep
     /// repainting while background work is in flight.
     fn poll(&mut self, ctx: &egui::Context) {
-        self.maybe_apply_defaults();
+        self.maybe_apply_columns();
         let force = self.enter_pressed_this_frame(ctx);
         match self.query.take_pending_apply(force) {
             Some(Ok(q)) => {
@@ -520,7 +659,15 @@ impl LogAnalyzerApp {
                 // Invalid query: show all rows unfiltered (spec: log-query).
                 self.reset_rows_to_all();
             }
-            None => {}
+            None => {
+                // A pending edit must repaint once its debounce elapses even
+                // with no further input events — otherwise a query typed (or
+                // re-armed by Reload) on a small file that finished indexing
+                // within the click frame would never be applied.
+                if let Some(wait) = self.query.pending_debounce_wait() {
+                    ctx.request_repaint_after(wait.max(Duration::from_millis(10)));
+                }
+            }
         }
 
         let mut busy = false;
@@ -582,6 +729,47 @@ impl eframe::App for LogAnalyzerApp {
                 {
                     self.open_path(&path);
                 }
+                // Reload the current file from disk; inactive with no file
+                // open (spec: log-file-access / Reloading the current file).
+                if ui
+                    .add_enabled(self.file.is_some(), egui::Button::new("Reload"))
+                    .clicked()
+                {
+                    self.reload_current();
+                }
+                // Favorite toggle for the open file (spec:
+                // workspace-persistence / Managing favorites).
+                let favorite = self
+                    .current_file_key()
+                    .is_some_and(|key| self.workspace.is_favorite(&key));
+                let star = if favorite { "★" } else { "☆" };
+                if ui
+                    .add_enabled(self.file.is_some(), egui::Button::new(star))
+                    .clicked()
+                {
+                    self.toggle_favorite_current();
+                }
+                // Favorites list: click to open, ✕ to remove (spec:
+                // workspace-persistence / Managing favorites).
+                ui.menu_button("Favorites", |ui| {
+                    let favorites = self.workspace.favorites.clone();
+                    if favorites.is_empty() {
+                        ui.weak("no favorites yet");
+                    }
+                    for fav in favorites {
+                        ui.horizontal(|ui| {
+                            let path = PathBuf::from(&fav);
+                            if ui.small_button(path.display().to_string()).clicked() {
+                                self.open_path(&path);
+                                ui.close();
+                            }
+                            if ui.small_button("✕").clicked() {
+                                self.remove_favorite(&fav);
+                                ui.close();
+                            }
+                        });
+                    }
+                });
                 ui.separator();
                 let invalid = self.query.invalid.clone();
                 let response = ui.add(
@@ -606,6 +794,10 @@ impl eframe::App for LogAnalyzerApp {
                         }
                     }
                 }
+                if ui.button("Reset").clicked() {
+                    self.query.reset();
+                    self.reset_rows_to_all();
+                }
                 ui.separator();
                 if let Some(file) = &self.file {
                     ui.label(file.path.display().to_string());
@@ -629,19 +821,22 @@ impl eframe::App for LogAnalyzerApp {
                 .as_ref()
                 .map(|f| f.visible_columns.clone())
                 .unwrap_or_default();
+            // Field-name filter: narrows the list only; selection and the
+            // table are untouched (spec: log-table-view).
+            ui.add(
+                egui::TextEdit::singleline(&mut self.column_filter)
+                    .hint_text("filter fields")
+                    .desired_width(ui.available_width()),
+            );
+            let shown: Vec<String> = discovered
+                .into_iter()
+                .filter(|name| field_matches_filter(name, &self.column_filter))
+                .collect();
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for name in discovered {
+                for name in shown {
                     let mut on = visible.contains(&name);
-                    if ui.checkbox(&mut on, name.as_str()).changed()
-                        && let Some(file) = self.file.as_mut()
-                    {
-                        if on {
-                            if !file.visible_columns.contains(&name) {
-                                file.visible_columns.push(name);
-                            }
-                        } else {
-                            file.visible_columns.retain(|c| c != &name);
-                        }
+                    if ui.checkbox(&mut on, name.as_str()).changed() {
+                        self.set_column_visible(&name, on);
                     }
                 }
             });
@@ -746,6 +941,7 @@ fn render_table(ui: &mut egui::Ui, view: &TableView, cache: &mut ParseCache) {
                     return;
                 };
                 let entry = cache.get_or_compute(line_no, || log_file::parse_object(slice));
+                let tint = level_tint(entry.as_deref());
                 let text = String::from_utf8_lossy(slice);
                 let text = truncate_chars(&text, MAX_CELL_CHARS);
 
@@ -762,6 +958,12 @@ fn render_table(ui: &mut egui::Ui, view: &TableView, cache: &mut ParseCache) {
                 for (i, column) in columns.iter().enumerate() {
                     let is_first = i == 0;
                     row.col(|ui| {
+                        // Severity tint under the cell content (spec:
+                        // log-table-view). Raw rows carry no tint.
+                        if let Some(tint) = tint {
+                            let rect = ui.available_rect_before_wrap();
+                            ui.painter().rect_filled(rect, 0.0, tint);
+                        }
                         match &entry {
                             Some(obj) => {
                                 let cell = obj
@@ -799,6 +1001,28 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
         let truncated: String = text.chars().take(max_chars).collect();
         format!("{truncated}...")
     }
+}
+
+/// Background tint for a row based on its structured entry's `level` field,
+/// compared case-insensitively (spec: log-table-view). Raw rows, entries
+/// without a `level` field, and any non-error/warning level keep the default
+/// background.
+fn level_tint(entry: Option<&serde_json::Map<String, Value>>) -> Option<egui::Color32> {
+    let level = entry?.get("level")?.as_str()?;
+    match level.to_ascii_lowercase().as_str() {
+        "error" => Some(ERROR_ROW_TINT),
+        "warn" | "warning" => Some(WARN_ROW_TINT),
+        _ => None,
+    }
+}
+
+/// True when a field name passes the Columns panel filter: an empty (or
+/// all-whitespace) filter passes everything, otherwise a case-insensitive
+/// substring match on the name (spec: log-table-view / Filtering the field
+/// list). Filtering never changes which columns are selected.
+fn field_matches_filter(name: &str, filter: &str) -> bool {
+    let filter = filter.trim();
+    filter.is_empty() || name.to_lowercase().contains(&filter.to_lowercase())
 }
 
 #[cfg(test)]
@@ -906,14 +1130,14 @@ mod tests {
     fn open_failure_keeps_previous_file() {
         let bytes = b"{\"a\": 1}\n";
         let path = temp_file("retention.log", bytes);
-        let app = &mut LogAnalyzerApp::new();
-        app.on_open_result(Ok(LoadedFile::open(&path).unwrap()));
+        let app = &mut LogAnalyzerApp::with_workspace(None);
+        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()), false);
         let first_path = app.file.as_ref().unwrap().path.clone();
 
-        app.on_open_result(Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "denied",
-        )));
+        app.on_open_result_inner(
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied")),
+            false,
+        );
         assert_eq!(app.file.as_ref().unwrap().path, first_path);
         assert!(app.error.is_some());
         let _ = std::fs::remove_file(&path);
@@ -923,8 +1147,8 @@ mod tests {
     fn open_success_replaces_state_and_sets_defaults() {
         let bytes = b"{\"@timestamp\": \"t\", \"level\": \"INFO\", \"message\": \"m\"}\n";
         let path = temp_file("defaults.log", bytes);
-        let app = &mut LogAnalyzerApp::new();
-        app.on_open_result(Ok(LoadedFile::open(&path).unwrap()));
+        let app = &mut LogAnalyzerApp::with_workspace(None);
+        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()), false);
         // Defaults cannot be picked at open time; they are applied once field
         // discovery has produced names (mirrors the flow in `poll`).
         {
@@ -934,13 +1158,13 @@ mod tests {
             fields.insert("level".to_owned());
             fields.insert("message".to_owned());
         }
-        app.maybe_apply_defaults();
+        app.maybe_apply_columns();
         assert_eq!(
             app.file.as_ref().unwrap().visible_columns,
             vec!["@timestamp", "level", "message"]
         );
         // Later frames (and user edits) are not clobbered: defaults apply once.
-        app.maybe_apply_defaults();
+        app.maybe_apply_columns();
         assert_eq!(
             app.file.as_ref().unwrap().visible_columns,
             vec!["@timestamp", "level", "message"]
@@ -952,8 +1176,8 @@ mod tests {
 
     #[test]
     fn open_path_indexes_fixture_and_discovers_fields() {
-        let path = std::path::Path::new("log_exaples/first.log");
-        let app = &mut LogAnalyzerApp::new();
+        let path = std::path::Path::new("log_examples/first.log");
+        let app = &mut LogAnalyzerApp::with_workspace(None);
         app.open_path(path);
         let file = app.file.as_ref().expect("file loaded");
 
@@ -972,7 +1196,7 @@ mod tests {
         while file.fields.lock().unwrap().is_empty() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
-        app.maybe_apply_defaults();
+        app.maybe_apply_columns();
         let file = app.file.as_ref().unwrap();
         let fields = file.fields.lock().unwrap();
         for expected in ["@timestamp", "level", "message", "durationMs"] {
@@ -1019,6 +1243,373 @@ mod tests {
         assert!(!applied.unwrap().is_empty());
     }
 
+    #[test]
+    fn query_ui_pending_debounce_wait_tracks_pending_edits() {
+        let mut q = QueryUi::new();
+        assert!(
+            q.pending_debounce_wait().is_none(),
+            "no apply owed when nothing was typed"
+        );
+
+        // A fresh edit is pending and reports remaining debounce time.
+        q.input = "level=ERROR".into();
+        q.note_edit();
+        let wait = q.pending_debounce_wait().expect("edit pending");
+        assert!(wait > Duration::ZERO && wait <= QUERY_DEBOUNCE);
+
+        // Once the debounce elapses the wait reaches zero (repaint now).
+        std::thread::sleep(QUERY_DEBOUNCE + Duration::from_millis(20));
+        assert_eq!(q.pending_debounce_wait(), Some(Duration::ZERO));
+
+        // After applying, nothing is owed.
+        q.applied_input = q.input.clone();
+        assert!(q.pending_debounce_wait().is_none());
+    }
+
+    // ---- 2.1: new parse-error kinds route through the invalid path ----
+
+    #[test]
+    fn query_ui_surfaces_new_invalid_kinds() {
+        for (input, needle) in [
+            ("(level=ERROR timeout", "missing closing"),
+            ("level=ERROR) timeout", "unbalanced"),
+            ("requestId='abc", "unterminated quote"),
+            ("level=ERROR or", "expected a term"),
+        ] {
+            let mut q = QueryUi::new();
+            q.input = input.into();
+            q.note_edit();
+            let applied = q.take_pending_apply(true).expect("an apply decision");
+            let msg = applied.expect_err("must be invalid");
+            assert!(msg.contains(needle), "{input}: {msg}");
+            assert!(q.invalid.is_some(), "{input} must set the invalid flag");
+        }
+    }
+
+    // ---- 2.2: one-action reset ----
+
+    #[test]
+    fn query_ui_reset_clears_input_and_invalid() {
+        let mut q = QueryUi::new();
+        // A filtered state…
+        q.input = "level=ERROR".into();
+        q.note_edit();
+        assert!(q.take_pending_apply(true).unwrap().is_ok());
+        // …then an invalid state.
+        q.input = "field=".into();
+        q.note_edit();
+        assert!(q.take_pending_apply(true).unwrap().is_err());
+        assert!(q.invalid.is_some());
+
+        // One reset action clears the input and the invalid indication, and
+        // leaves nothing pending to apply (the app then restores all rows).
+        q.reset();
+        assert!(q.input.is_empty());
+        assert!(q.invalid.is_none());
+        assert!(q.take_pending_apply(true).is_none());
+    }
+
+    // ---- 3.2: severity tint classifier ----
+
+    /// Build a structured entry from key/value pairs.
+    fn map_with(pairs: &[(&str, Value)]) -> serde_json::Map<String, Value> {
+        pairs
+            .iter()
+            .fold(serde_json::Map::new(), |mut map, (key, value)| {
+                map.insert((*key).to_owned(), value.clone());
+                map
+            })
+    }
+
+    #[test]
+    fn level_tint_classifies_case_insensitively() {
+        use serde_json::json;
+        let lvl = |v: Value| map_with(&[("level", v)]);
+        assert_eq!(level_tint(Some(&lvl(json!("ERROR")))), Some(ERROR_ROW_TINT));
+        assert_eq!(level_tint(Some(&lvl(json!("Error")))), Some(ERROR_ROW_TINT));
+        assert_eq!(level_tint(Some(&lvl(json!("WARN")))), Some(WARN_ROW_TINT));
+        assert_eq!(
+            level_tint(Some(&lvl(json!("Warning")))),
+            Some(WARN_ROW_TINT)
+        );
+        assert_eq!(
+            level_tint(Some(&lvl(json!("warning")))),
+            Some(WARN_ROW_TINT)
+        );
+        assert_eq!(level_tint(Some(&lvl(json!("INFO")))), None);
+        assert_eq!(level_tint(Some(&lvl(json!("debug")))), None);
+        assert_eq!(level_tint(Some(&lvl(json!(3)))), None, "non-string level");
+        assert_eq!(
+            level_tint(Some(&map_with(&[("other", json!("x"))]))),
+            None,
+            "entry without a level field"
+        );
+        assert_eq!(level_tint(None), None, "raw row never tints");
+    }
+
+    // ---- 4.1/4.2: columns panel filter ----
+
+    #[test]
+    fn field_filter_matches_case_insensitively() {
+        // Empty and whitespace-only filters pass everything through.
+        assert!(field_matches_filter("requestId", ""));
+        assert!(field_matches_filter("requestId", "   "));
+        assert!(field_matches_filter("requestId", "req"));
+        assert!(field_matches_filter("requestId", "UEST"));
+        assert!(field_matches_filter("requestId", "id"));
+        assert!(!field_matches_filter("requestId", "zzz"));
+        assert!(!field_matches_filter("level", "message"));
+    }
+
+    #[test]
+    fn column_filter_hides_names_but_keeps_selection() {
+        let bytes = b"{\"level\": \"INFO\", \"message\": \"m\"}\n";
+        let path = temp_file("column_filter.log", bytes);
+        let app = &mut LogAnalyzerApp::with_workspace(None);
+        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()), false);
+        app.file.as_mut().unwrap().visible_columns = vec!["level".into(), "message".into()];
+        app.column_filter = "req".into();
+
+        // What the panel would render now: only the matching names…
+        let discovered = ["level", "message", "requestId"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        let shown: Vec<&String> = discovered
+            .iter()
+            .filter(|name| field_matches_filter(name, &app.column_filter))
+            .collect();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0], "requestId");
+
+        // …while the hidden-but-selected columns stay applied to the table.
+        assert_eq!(
+            app.file.as_ref().unwrap().visible_columns,
+            vec!["level", "message"]
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ---- 5.2/5.3/5.4: workspace wiring ----
+
+    #[test]
+    fn workspace_persists_across_app_instances() {
+        let ws_path = std::env::temp_dir().join("log_analyzer_test_ws_roundtrip.json");
+        let _ = std::fs::remove_file(&ws_path);
+        let bytes = b"{\"level\": \"INFO\"}\n";
+        let log_path = temp_file("ws_roundtrip.log", bytes);
+        let key = persistence::path_key(&log_path);
+
+        let app = &mut LogAnalyzerApp::with_workspace(Some(ws_path.clone()));
+        app.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()), false);
+        assert!(app.toggle_favorite_current().unwrap());
+        // Write-through: the workspace file exists after the mutation.
+        assert!(ws_path.exists());
+
+        // A fresh instance loads the same workspace and sees the favorite.
+        let app2 = LogAnalyzerApp::with_workspace(Some(ws_path.clone()));
+        assert!(app2.workspace.is_favorite(&key));
+
+        let _ = std::fs::remove_file(&ws_path);
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn favorite_toggle_and_removal_persist() {
+        let ws_path = std::env::temp_dir().join("log_analyzer_test_ws_favorites.json");
+        let _ = std::fs::remove_file(&ws_path);
+        let bytes = b"{\"level\": \"INFO\"}\n";
+        let log_path = temp_file("ws_favorites.log", bytes);
+        let key = persistence::path_key(&log_path);
+
+        let app = &mut LogAnalyzerApp::with_workspace(Some(ws_path.clone()));
+        app.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()), false);
+
+        // Toggle on: marked and persisted.
+        assert!(app.toggle_favorite_current().unwrap());
+        assert!(Workspace::load(&ws_path).is_favorite(&key));
+
+        // Removing the open file's favorite unmarks the star.
+        app.remove_favorite(&key);
+        assert!(!app.workspace.is_favorite(&key));
+        assert!(!Workspace::load(&ws_path).is_favorite(&key));
+        // Toggling again re-adds it.
+        assert!(app.toggle_favorite_current().unwrap());
+        assert_eq!(app.current_file_key().as_deref(), Some(key.as_str()));
+
+        let _ = std::fs::remove_file(&ws_path);
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn saved_columns_restored_over_defaults_and_write_through() {
+        let ws_path = std::env::temp_dir().join("log_analyzer_test_ws_columns.json");
+        let _ = std::fs::remove_file(&ws_path);
+        let bytes =
+            b"{\"@timestamp\": \"t\", \"level\": \"INFO\", \"message\": \"m\", \"extra\": 1}\n";
+        let log_path = temp_file("ws_columns.log", bytes);
+        let key = persistence::path_key(&log_path);
+        fn discover(app: &mut LogAnalyzerApp) {
+            let file = app.file.as_mut().unwrap();
+            let mut fields = file.fields.lock().unwrap();
+            for name in ["@timestamp", "level", "message", "extra"] {
+                fields.insert(name.to_owned());
+            }
+        }
+
+        // Instance 1: defaults apply at discovery, then a user change is
+        // written through to the workspace.
+        let app = &mut LogAnalyzerApp::with_workspace(Some(ws_path.clone()));
+        app.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()), false);
+        discover(app);
+        app.maybe_apply_columns();
+        assert_eq!(
+            app.file.as_ref().unwrap().visible_columns,
+            vec!["@timestamp", "level", "message"]
+        );
+        app.set_column_visible("message", false);
+        assert_eq!(
+            app.file.as_ref().unwrap().visible_columns,
+            vec!["@timestamp", "level"]
+        );
+        assert_eq!(
+            Workspace::load(&ws_path).columns_for(&key).unwrap(),
+            &vec!["@timestamp".to_owned(), "level".to_owned()]
+        );
+
+        // Instance 2: reopening restores the saved selection over defaults.
+        let app2 = &mut LogAnalyzerApp::with_workspace(Some(ws_path.clone()));
+        app2.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()), false);
+        discover(app2);
+        app2.maybe_apply_columns();
+        assert_eq!(
+            app2.file.as_ref().unwrap().visible_columns,
+            vec!["@timestamp", "level"]
+        );
+
+        let _ = std::fs::remove_file(&ws_path);
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    // ---- 6.1/6.2: reload current file ----
+
+    /// Block until the active background scan finishes (tests run scans
+    /// directly, without the egui poll loop).
+    fn wait_scan_done(app: &LogAnalyzerApp) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match &app.rows {
+                RowSource::Matched(handle) if handle.done.load(Ordering::Relaxed) => return,
+                RowSource::Matched(_) => {}
+                RowSource::All => panic!("expected a running query scan"),
+            }
+            assert!(Instant::now() < deadline, "scan did not finish in time");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn reload_picks_up_appended_lines_and_keeps_query() {
+        let log_path = std::env::temp_dir().join("log_analyzer_test_reload.log");
+        std::fs::write(&log_path, b"{\"level\": \"INFO\"}\n").unwrap();
+        let app = &mut LogAnalyzerApp::with_workspace(None);
+
+        app.open_path(&log_path);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !app.file.as_ref().unwrap().index_done() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.file.as_ref().unwrap().index_done());
+        assert_eq!(app.file.as_ref().unwrap().line_count(), 1);
+
+        // Discover fields and save a deliberately empty column selection, so
+        // it can be told apart from the default selection (which would be
+        // ["level"] here).
+        app.file
+            .as_mut()
+            .unwrap()
+            .fields
+            .lock()
+            .unwrap()
+            .insert("level".to_owned());
+        app.maybe_apply_columns();
+        assert_eq!(app.file.as_ref().unwrap().visible_columns, vec!["level"]);
+        app.set_column_visible("level", false);
+
+        // An active query filters the loaded rows.
+        app.query.input = "level=ERROR".into();
+        app.query.note_edit();
+        let q = app.query.take_pending_apply(true).unwrap().unwrap();
+        app.start_query_scan(q);
+        wait_scan_done(app);
+        let index_guard = app.file.as_ref().unwrap().index.read().unwrap();
+        assert_eq!(app.rows.row_count(&index_guard), 0, "no ERROR rows yet");
+        drop(index_guard);
+
+        // Append to the file behind the app's back, then reload.
+        let mut handle = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path)
+            .unwrap();
+        handle.write_all(b"{\"level\": \"ERROR\"}\n").unwrap();
+        drop(handle);
+        app.reload_current();
+
+        // The query text is preserved and re-armed so `poll` re-applies it
+        // once indexing finishes.
+        assert_eq!(app.query.input, "level=ERROR");
+        assert!(app.query.applied_input.is_empty(), "query re-armed");
+        assert!(app.query.last_edit.is_some());
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !app.file.as_ref().unwrap().index_done() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.file.as_ref().unwrap().index_done());
+        assert_eq!(
+            app.file.as_ref().unwrap().line_count(),
+            2,
+            "reload picks up appended content"
+        );
+
+        // Field discovery re-runs on the reloaded file; once fields appear,
+        // `poll` restores the saved selection instead of the defaults.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.file.as_ref().unwrap().fields.lock().unwrap().is_empty()
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        app.maybe_apply_columns();
+        assert!(
+            app.file.as_ref().unwrap().visible_columns.is_empty(),
+            "saved (empty) column selection restored over defaults"
+        );
+
+        // The step `poll` performs after re-arming: re-apply the preserved
+        // query against the reloaded rows.
+        let q = query::parse(&app.query.input).unwrap();
+        app.start_query_scan(q);
+        wait_scan_done(app);
+        let index_guard = app.file.as_ref().unwrap().index.read().unwrap();
+        assert_eq!(
+            app.rows.row_count(&index_guard),
+            1,
+            "query still filters the reloaded rows"
+        );
+        drop(index_guard);
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn reload_without_file_is_noop() {
+        let app = &mut LogAnalyzerApp::with_workspace(None);
+        app.query.input = "level=ERROR".into();
+        app.reload_current();
+        assert!(app.file.is_none());
+        assert_eq!(app.query.input, "level=ERROR");
+    }
+
     // ---- 5.1: row source mapping ----
 
     #[test]
@@ -1052,7 +1643,7 @@ mod tests {
     #[ignore = "scale verification; generate /tmp/log_analyzer_synth.log first"]
     fn large_file_open_scan_and_cancel_behave_per_spec() {
         let path = std::path::Path::new("/tmp/log_analyzer_synth.log");
-        let mut app = LogAnalyzerApp::new();
+        let mut app = LogAnalyzerApp::with_workspace(None);
         let t_open = Instant::now();
         app.open_path(path);
         let open_elapsed = t_open.elapsed();
@@ -1081,7 +1672,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         let fields_elapsed = t_fields.elapsed();
-        app.maybe_apply_defaults();
+        app.maybe_apply_columns();
         assert!(!app.file.as_ref().unwrap().visible_columns.is_empty());
 
         // Query scan on a background thread (as production does).

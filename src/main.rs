@@ -2,6 +2,7 @@
 
 mod app;
 mod log_file;
+mod persistence;
 mod query;
 
 fn main() -> eframe::Result {
@@ -17,7 +18,9 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "log_analyzer",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            // Light theme from startup (spec: app-appearance).
+            cc.egui_ctx.set_visuals(eframe::egui::Visuals::light());
             let mut app = app::LogAnalyzerApp::new();
             if let Some(path) = initial_path {
                 app.open_path(std::path::Path::new(&path));
