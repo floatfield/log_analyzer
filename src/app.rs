@@ -1,5 +1,6 @@
 //! Application state and UI: file opening, background indexing/scanning,
-//! the virtualized log table, column configuration, and the query input.
+//! the virtualized log table, column configuration, row selection with a
+//! JSON detail pane, and the query input.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs::File;
@@ -35,6 +36,11 @@ const DEFAULT_COLUMNS: [&str; 3] = ["@timestamp", "level", "message"];
 const ERROR_ROW_TINT: egui::Color32 = egui::Color32::from_rgba_unmultiplied_const(220, 50, 50, 60);
 /// Translucent row tint for `warn`/`warning`-level rows.
 const WARN_ROW_TINT: egui::Color32 = egui::Color32::from_rgba_unmultiplied_const(235, 185, 30, 60);
+/// Translucent tint marking the selected row, painted over any severity tint.
+const SELECTED_ROW_TINT: egui::Color32 =
+    egui::Color32::from_rgba_unmultiplied_const(70, 130, 220, 55);
+/// The detail pane truncates very long contents beyond this many characters.
+const DETAIL_MAX_CHARS: usize = 20_000;
 
 type SharedIndex = Arc<RwLock<IndexData>>;
 type SharedFields = Arc<Mutex<BTreeSet<String>>>;
@@ -357,6 +363,8 @@ pub struct LogAnalyzerApp {
     /// Columns-panel field-name filter text (session-only, spec:
     /// log-table-view).
     column_filter: String,
+    /// The selected row's file line number, if any; drives the detail pane.
+    selected_line: Option<usize>,
     /// Persisted workspace: favorites and per-file column selections (spec:
     /// workspace-persistence).
     workspace: Workspace,
@@ -383,6 +391,7 @@ impl LogAnalyzerApp {
             cache: ParseCache::new(PARSE_CACHE_CAPACITY),
             error: None,
             column_filter: String::new(),
+            selected_line: None,
             workspace,
             workspace_path: config_path,
         }
@@ -457,6 +466,8 @@ impl LogAnalyzerApp {
                     self.query = QueryUi::new();
                 }
                 self.cache.clear();
+                // Line numbers may shift after a reopen/reload.
+                self.selected_line = None;
                 self.error = None;
                 self.file = Some(file);
             }
@@ -711,6 +722,12 @@ impl LogAnalyzerApp {
             )),
         }
     }
+
+    /// Pretty-printed text for the selected row, when a file is open and a
+    /// row is selected (design: row selection / detail pane).
+    fn selected_row_detail(&self) -> Option<String> {
+        row_detail(self.file.as_ref()?, self.selected_line?)
+    }
 }
 
 impl eframe::App for LogAnalyzerApp {
@@ -805,41 +822,80 @@ impl eframe::App for LogAnalyzerApp {
             });
         });
 
-        egui::SidePanel::right("columns").show(ctx, |ui| {
-            ui.heading("Columns");
-            ui.separator();
-            let discovered: Option<Vec<String>> = self
-                .file
-                .as_ref()
-                .map(|f| f.fields.lock().unwrap().iter().cloned().collect());
-            let Some(discovered) = discovered else {
-                ui.weak("no file open");
-                return;
-            };
-            let visible: Vec<String> = self
-                .file
-                .as_ref()
-                .map(|f| f.visible_columns.clone())
-                .unwrap_or_default();
-            // Field-name filter: narrows the list only; selection and the
-            // table are untouched (spec: log-table-view).
-            ui.add(
-                egui::TextEdit::singleline(&mut self.column_filter)
-                    .hint_text("filter fields")
-                    .desired_width(ui.available_width()),
-            );
-            let shown: Vec<String> = discovered
-                .into_iter()
-                .filter(|name| field_matches_filter(name, &self.column_filter))
-                .collect();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for name in shown {
-                    let mut on = visible.contains(&name);
-                    if ui.checkbox(&mut on, name.as_str()).changed() {
-                        self.set_column_visible(&name, on);
-                    }
+        egui::SidePanel::right("inspector").show(ctx, |ui| {
+            // Upper pane: column selection (spec: log-table-view).
+            egui::TopBottomPanel::top("columns_pane")
+                .resizable(true)
+                .default_height(340.0)
+                .min_height(140.0)
+                .show_inside(ui, |ui| {
+                    ui.heading("Columns");
+                    ui.separator();
+                    let discovered: Option<Vec<String>> = self
+                        .file
+                        .as_ref()
+                        .map(|f| f.fields.lock().unwrap().iter().cloned().collect());
+                    let Some(discovered) = discovered else {
+                        ui.weak("no file open");
+                        return;
+                    };
+                    let visible: Vec<String> = self
+                        .file
+                        .as_ref()
+                        .map(|f| f.visible_columns.clone())
+                        .unwrap_or_default();
+                    // Field-name filter: narrows the list only; selection and
+                    // the table are untouched (spec: log-table-view).
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.column_filter)
+                            .hint_text("filter fields")
+                            .desired_width(ui.available_width()),
+                    );
+                    let shown: Vec<String> = discovered
+                        .into_iter()
+                        .filter(|name| field_matches_filter(name, &self.column_filter))
+                        .collect();
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for name in shown {
+                            let mut on = visible.contains(&name);
+                            if ui.checkbox(&mut on, name.as_str()).changed() {
+                                self.set_column_visible(&name, on);
+                            }
+                        }
+                    });
+                });
+
+            // Lower pane: pretty-printed contents of the selected row.
+            let detail = self.selected_row_detail();
+            ui.horizontal(|ui| {
+                ui.heading("Row detail");
+                if let Some(line) = self.selected_line {
+                    ui.weak(format!("line {}", line + 1));
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(detail.is_some(), egui::Button::new("Copy"))
+                        .clicked()
+                        && let Some(text) = &detail
+                    {
+                        ui.ctx().copy_text(text.clone());
+                    }
+                });
             });
+            ui.separator();
+            match detail {
+                Some(text) => {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(text).monospace())
+                                .wrap_mode(egui::TextWrapMode::Wrap),
+                        );
+                    });
+                }
+                None => {
+                    ui.weak("select a row to inspect its contents");
+                }
+            }
         });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -878,12 +934,19 @@ impl eframe::App for LogAnalyzerApp {
                 });
                 return;
             };
-            render_table(ui, &view, &mut self.cache);
+            render_table(ui, &view, &mut self.cache, &mut self.selected_line);
         });
     }
 }
 
-fn render_table(ui: &mut egui::Ui, view: &TableView, cache: &mut ParseCache) {
+/// Render the virtualized table; `selected` is the selected row's line
+/// number, toggled by clicking rows.
+fn render_table(
+    ui: &mut egui::Ui,
+    view: &TableView,
+    cache: &mut ParseCache,
+    selected: &mut Option<usize>,
+) {
     let row_height = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
     let row_count = view
         .index
@@ -947,10 +1010,31 @@ fn render_table(ui: &mut egui::Ui, view: &TableView, cache: &mut ParseCache) {
 
                 if columns.is_empty() {
                     row.col(|ui| {
+                        let cell_rect = ui.max_rect();
+                        if *selected == Some(line_no) {
+                            ui.painter().rect_filled(cell_rect, 0.0, SELECTED_ROW_TINT);
+                        }
+                        // The hit overlay must be created after the cell
+                        // content: the topmost widget wins hit-testing, and an
+                        // overflowing truncated label otherwise shadows clicks
+                        // on filled cells. The elided-text tooltip is also
+                        // suppressed: its popup layer would sit over the
+                        // pointer and block row clicks.
                         ui.add(
                             egui::Label::new(egui::RichText::new(text.clone()).monospace())
-                                .wrap_mode(egui::TextWrapMode::Truncate),
+                                .wrap_mode(egui::TextWrapMode::Truncate)
+                                .show_tooltip_when_elided(false),
                         );
+                        let hit = ui
+                            .interact(
+                                cell_rect,
+                                egui::Id::new(("row-hit", line_no, 0usize)),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if hit.clicked() {
+                            apply_row_click(selected, line_no);
+                        }
                     });
                     return;
                 }
@@ -958,12 +1042,17 @@ fn render_table(ui: &mut egui::Ui, view: &TableView, cache: &mut ParseCache) {
                 for (i, column) in columns.iter().enumerate() {
                     let is_first = i == 0;
                     row.col(|ui| {
+                        let cell_rect = ui.max_rect();
                         // Severity tint under the cell content (spec:
                         // log-table-view). Raw rows carry no tint.
                         if let Some(tint) = tint {
-                            let rect = ui.available_rect_before_wrap();
-                            ui.painter().rect_filled(rect, 0.0, tint);
+                            ui.painter().rect_filled(cell_rect, 0.0, tint);
                         }
+                        if *selected == Some(line_no) {
+                            ui.painter().rect_filled(cell_rect, 0.0, SELECTED_ROW_TINT);
+                        }
+                        // Hit overlay after the content: see the raw-branch
+                        // comment above (topmost widget wins hit-testing).
                         match &entry {
                             Some(obj) => {
                                 let cell = obj
@@ -972,7 +1061,8 @@ fn render_table(ui: &mut egui::Ui, view: &TableView, cache: &mut ParseCache) {
                                     .unwrap_or_default();
                                 ui.add(
                                     egui::Label::new(truncate_chars(&cell, MAX_CELL_CHARS))
-                                        .wrap_mode(egui::TextWrapMode::Truncate),
+                                        .wrap_mode(egui::TextWrapMode::Truncate)
+                                        .show_tooltip_when_elided(false),
                                 );
                             }
                             None => {
@@ -983,10 +1073,21 @@ fn render_table(ui: &mut egui::Ui, view: &TableView, cache: &mut ParseCache) {
                                         egui::Label::new(
                                             egui::RichText::new(text.clone()).weak().monospace(),
                                         )
-                                        .wrap_mode(egui::TextWrapMode::Truncate),
+                                        .wrap_mode(egui::TextWrapMode::Truncate)
+                                        .show_tooltip_when_elided(false),
                                     );
                                 }
                             }
+                        }
+                        let hit = ui
+                            .interact(
+                                cell_rect,
+                                egui::Id::new(("row-hit", line_no, i)),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if hit.clicked() {
+                            apply_row_click(selected, line_no);
                         }
                     });
                 }
@@ -1001,6 +1102,34 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
         let truncated: String = text.chars().take(max_chars).collect();
         format!("{truncated}...")
     }
+}
+
+/// Click behavior of row selection: clicking the selected row deselects it,
+/// clicking any other row selects that one.
+fn apply_row_click(selected: &mut Option<usize>, line_no: usize) {
+    *selected = if *selected == Some(line_no) {
+        None
+    } else {
+        Some(line_no)
+    };
+}
+
+/// Detail-pane text for one file line: pretty-printed JSON for structured
+/// entries, the lossy raw text otherwise, truncated beyond
+/// [`DETAIL_MAX_CHARS`].
+fn row_detail_text(slice: &[u8]) -> String {
+    let pretty =
+        log_file::parse_object(slice).and_then(|obj| serde_json::to_string_pretty(&obj).ok());
+    let text = pretty.unwrap_or_else(|| String::from_utf8_lossy(slice).into_owned());
+    truncate_chars(&text, DETAIL_MAX_CHARS)
+}
+
+/// Detail-pane text for a line of an open file, read on demand through the
+/// shared index.
+fn row_detail(file: &LoadedFile, line: usize) -> Option<String> {
+    let index_guard = file.index.read().ok()?;
+    let slice = index_guard.line_slice(&file.map, line)?;
+    Some(row_detail_text(slice))
 }
 
 /// Background tint for a row based on its structured entry's `level` field,
@@ -1630,6 +1759,66 @@ mod tests {
         assert_eq!(matched.line_number(0, &index), Some(0));
         assert_eq!(matched.line_number(1, &index), Some(2));
         assert_eq!(matched.line_number(2, &index), None);
+    }
+
+    // ---- row selection + detail pane ----
+
+    #[test]
+    fn row_click_toggles_and_moves_selection() {
+        let mut selected: Option<usize> = None;
+        apply_row_click(&mut selected, 3);
+        assert_eq!(selected, Some(3));
+        apply_row_click(&mut selected, 3);
+        assert_eq!(selected, None, "clicking the selected row deselects it");
+        apply_row_click(&mut selected, 5);
+        apply_row_click(&mut selected, 7);
+        assert_eq!(selected, Some(7), "selection moves to the clicked row");
+    }
+
+    #[test]
+    fn row_detail_pretty_prints_json_and_keeps_raw_text() {
+        let pretty = row_detail_text(b"{\"level\":\"INFO\",\"message\":\"hi\"}");
+        assert!(
+            pretty.contains("\"level\": \"INFO\""),
+            "structured detail is pretty printed:\n{pretty}"
+        );
+        assert!(pretty.contains('\n'), "pretty JSON spans multiple lines");
+
+        assert_eq!(
+            row_detail_text(b"PANIC: unexpected state"),
+            "PANIC: unexpected state",
+            "raw lines pass through unchanged"
+        );
+
+        let long = "x".repeat(DETAIL_MAX_CHARS + 10);
+        let truncated = row_detail_text(long.as_bytes());
+        assert!(truncated.ends_with("..."));
+        assert!(truncated.chars().count() <= DETAIL_MAX_CHARS + 3);
+    }
+
+    #[test]
+    fn row_selection_clears_on_open_and_reads_detail() {
+        let bytes = b"{\"level\": \"INFO\"}\n{\"level\": \"ERROR\", \"message\": \"boom\"}\n";
+        let path = temp_file("row_selection.log", bytes);
+        let app = &mut LogAnalyzerApp::with_workspace(None);
+        // Seed the index directly (background indexing is a separate job).
+        let mut file = LoadedFile::open(&path).unwrap();
+        file.index = Arc::new(RwLock::new(fixture_index(bytes)));
+        app.on_open_result_inner(Ok(file), false);
+
+        // Selecting a line exposes its pretty-printed JSON.
+        app.selected_line = Some(1);
+        assert_eq!(
+            row_detail(app.file.as_ref().unwrap(), 1).as_deref(),
+            Some("{\n  \"level\": \"ERROR\",\n  \"message\": \"boom\"\n}")
+        );
+        assert!(app.selected_row_detail().is_some());
+
+        // Opening a file again resets the selection: line numbers may shift.
+        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()), false);
+        assert_eq!(app.selected_line, None);
+        assert!(app.selected_row_detail().is_none());
+        let _ = std::fs::remove_file(&path);
     }
 
     // ---- 7.2: scale verification (ignored by default) ----
