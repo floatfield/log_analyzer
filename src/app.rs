@@ -16,7 +16,7 @@ use memmap2::Mmap;
 use serde_json::Value;
 
 use crate::log_file::{self, IncrementalIndexer, IndexData};
-use crate::persistence::{self, Workspace};
+use crate::persistence::{self, FilterModifier, Workspace};
 use crate::query::{self, Query};
 
 /// How many bytes the incremental indexer scans per pass.
@@ -273,6 +273,10 @@ struct QueryUi {
     applied_input: String,
     invalid: Option<String>,
     last_edit: Option<Instant>,
+    /// Set by [`QueryUi::append_filter_term`]; the next `poll` takes it and
+    /// ORs it into the force argument so the appended term applies without
+    /// the debounce wait (design D5). One-shot.
+    force_next_apply: bool,
 }
 
 impl QueryUi {
@@ -282,6 +286,7 @@ impl QueryUi {
             applied_input: String::new(),
             invalid: None,
             last_edit: None,
+            force_next_apply: false,
         }
     }
 
@@ -297,6 +302,22 @@ impl QueryUi {
         self.applied_input.clear();
         self.invalid = None;
         self.last_edit = None;
+        self.force_next_apply = false;
+    }
+
+    /// Append a generated filter term (spec: modifier-click-filtering /
+    /// Filter term from a modifier-click): ` term` after existing text
+    /// (juxtaposition = AND), the term alone in an empty input, then force an
+    /// apply so the rows filter without the debounce wait.
+    fn append_filter_term(&mut self, term: &str) {
+        if self.input.trim().is_empty() {
+            self.input = term.to_owned();
+        } else {
+            self.input.push(' ');
+            self.input.push_str(term);
+        }
+        self.note_edit();
+        self.force_next_apply = true;
     }
 
     /// Decide what to apply this frame: nothing, the parsed query, or an
@@ -354,6 +375,20 @@ struct TableView {
     columns: Vec<String>,
 }
 
+impl FilterModifier {
+    /// True when `modifiers` holds this setting's key. `Command` maps to
+    /// egui's platform command modifier: Cmd on macOS, Ctrl elsewhere
+    /// (design D1).
+    fn matches_modifier(self, modifiers: egui::Modifiers) -> bool {
+        match self {
+            FilterModifier::Ctrl => modifiers.ctrl,
+            FilterModifier::Alt => modifiers.alt,
+            FilterModifier::Shift => modifiers.shift,
+            FilterModifier::Command => modifiers.command,
+        }
+    }
+}
+
 pub struct LogAnalyzerApp {
     file: Option<LoadedFile>,
     rows: RowSource,
@@ -365,6 +400,9 @@ pub struct LogAnalyzerApp {
     column_filter: String,
     /// The selected row's file line number, if any; drives the detail pane.
     selected_line: Option<usize>,
+    /// Keyboard modifier that turns a cell click into a query filter (spec:
+    /// modifier-click-filtering). Mirrors `workspace.filter_modifier`.
+    filter_modifier: FilterModifier,
     /// Persisted workspace: favorites and per-file column selections (spec:
     /// workspace-persistence).
     workspace: Workspace,
@@ -392,9 +430,18 @@ impl LogAnalyzerApp {
             error: None,
             column_filter: String::new(),
             selected_line: None,
+            filter_modifier: workspace.filter_modifier,
             workspace,
             workspace_path: config_path,
         }
+    }
+
+    /// Change the filter modifier and persist immediately (spec:
+    /// modifier-click-filtering / Configurable filter modifier).
+    fn set_filter_modifier(&mut self, modifier: FilterModifier) {
+        self.filter_modifier = modifier;
+        self.workspace.filter_modifier = modifier;
+        self.save_workspace();
     }
 
     /// Write the workspace through to disk; failures are non-fatal.
@@ -651,7 +698,12 @@ impl LogAnalyzerApp {
     /// repainting while background work is in flight.
     fn poll(&mut self, ctx: &egui::Context) {
         self.maybe_apply_columns();
-        let force = self.enter_pressed_this_frame(ctx);
+        let mut force = self.enter_pressed_this_frame(ctx);
+        // A modifier-click just appended a term: apply it without waiting out
+        // the debounce (design D5).
+        if std::mem::take(&mut self.query.force_next_apply) {
+            force = true;
+        }
         match self.query.take_pending_apply(force) {
             Some(Ok(q)) => {
                 if q.is_empty() {
@@ -815,6 +867,19 @@ impl eframe::App for LogAnalyzerApp {
                     self.query.reset();
                     self.reset_rows_to_all();
                 }
+                // Filter modifier for click-to-filter (spec:
+                // modifier-click-filtering / Configurable filter modifier).
+                let mut chosen = self.filter_modifier;
+                egui::ComboBox::from_id_salt("filter_modifier")
+                    .selected_text(self.filter_modifier.label())
+                    .show_ui(ui, |ui| {
+                        for option in FilterModifier::ALL {
+                            ui.selectable_value(&mut chosen, option, option.label());
+                        }
+                    });
+                if chosen != self.filter_modifier {
+                    self.set_filter_modifier(chosen);
+                }
                 ui.separator();
                 if let Some(file) = &self.file {
                     ui.label(file.path.display().to_string());
@@ -934,18 +999,29 @@ impl eframe::App for LogAnalyzerApp {
                 });
                 return;
             };
-            render_table(ui, &view, &mut self.cache, &mut self.selected_line);
+            render_table(
+                ui,
+                &view,
+                &mut self.cache,
+                &mut self.selected_line,
+                self.filter_modifier,
+                &mut self.query,
+            );
         });
     }
 }
 
 /// Render the virtualized table; `selected` is the selected row's line
-/// number, toggled by clicking rows.
+/// number, toggled by clicking rows without `filter_modifier` held. With the
+/// modifier held, a structured cell click instead appends its filter term to
+/// `query_ui` (spec: modifier-click-filtering).
 fn render_table(
     ui: &mut egui::Ui,
     view: &TableView,
     cache: &mut ParseCache,
     selected: &mut Option<usize>,
+    filter_modifier: FilterModifier,
+    query_ui: &mut QueryUi,
 ) {
     let row_height = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
     let row_count = view
@@ -1032,7 +1108,13 @@ fn render_table(
                                 egui::Sense::click(),
                             )
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        if hit.clicked() {
+                        // Raw lines are not filterable (spec:
+                        // modifier-click-filtering / Ineligible cells do
+                        // nothing): with the modifier held the click is a
+                        // no-op, without it the usual selection toggle runs.
+                        let modifier_held =
+                            filter_modifier.matches_modifier(ui.input(|i| i.modifiers));
+                        if hit.clicked() && !modifier_held {
                             apply_row_click(selected, line_no);
                         }
                     });
@@ -1087,7 +1169,22 @@ fn render_table(
                             )
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
                         if hit.clicked() {
-                            apply_row_click(selected, line_no);
+                            let modifier_held =
+                                filter_modifier.matches_modifier(ui.input(|i| i.modifiers));
+                            if !modifier_held {
+                                apply_row_click(selected, line_no);
+                            } else if let Some(term) = entry.as_deref().and_then(|obj| {
+                                obj.get(column)
+                                    .map(query::field_value_as_text)
+                                    .and_then(|value| filter_term(column, &value))
+                            }) {
+                                query_ui.append_filter_term(&term);
+                            }
+                            // A modifier-click on an ineligible cell (raw
+                            // row, missing value, unqueryable name,
+                            // unrepresentable value) does nothing: neither
+                            // the query nor the selection changes (spec:
+                            // modifier-click-filtering).
                         }
                     });
                 }
@@ -1112,6 +1209,27 @@ fn apply_row_click(selected: &mut Option<usize>, line_no: usize) {
     } else {
         Some(line_no)
     };
+}
+
+/// Query term that filters for a clicked cell's value (spec:
+/// modifier-click-filtering / Filter term from a modifier-click). Built from
+/// the entry value — the exact text field-equality compares, so the clicked
+/// row always matches its own term — never from the truncated display text.
+/// Single quotes by default, double quotes when the value itself contains a
+/// single quote; `None` when the value contains both quote kinds or a line
+/// break (unrepresentable), or the field name is not a valid query field name
+/// (an unqueryable JSON key would poison the whole query into "invalid").
+fn filter_term(field: &str, value: &str) -> Option<String> {
+    if !query::is_valid_field_name(field) {
+        return None;
+    }
+    let has_single = value.contains('\'');
+    let has_double = value.contains('"');
+    if (has_single && has_double) || value.contains(['\n', '\r']) {
+        return None;
+    }
+    let quote = if has_single { '"' } else { '\'' };
+    Some(format!("{field}={quote}{value}{quote}"))
 }
 
 /// Detail-pane text for one file line: pretty-printed JSON for structured
@@ -1571,6 +1689,25 @@ mod tests {
     }
 
     #[test]
+    fn filter_modifier_change_persists() {
+        let ws_path = std::env::temp_dir().join("log_analyzer_test_ws_filter_modifier.json");
+        let _ = std::fs::remove_file(&ws_path);
+
+        // Defaults to Ctrl; a change is written through immediately.
+        let app = &mut LogAnalyzerApp::with_workspace(Some(ws_path.clone()));
+        assert_eq!(app.filter_modifier, FilterModifier::Ctrl);
+        app.set_filter_modifier(FilterModifier::Alt);
+        assert_eq!(app.filter_modifier, FilterModifier::Alt);
+        assert!(ws_path.exists());
+
+        // A fresh instance restores the choice (spec: the choice persists).
+        let app2 = LogAnalyzerApp::with_workspace(Some(ws_path.clone()));
+        assert_eq!(app2.filter_modifier, FilterModifier::Alt);
+
+        let _ = std::fs::remove_file(&ws_path);
+    }
+
+    #[test]
     fn saved_columns_restored_over_defaults_and_write_through() {
         let ws_path = std::env::temp_dir().join("log_analyzer_test_ws_columns.json");
         let _ = std::fs::remove_file(&ws_path);
@@ -1773,6 +1910,88 @@ mod tests {
         apply_row_click(&mut selected, 5);
         apply_row_click(&mut selected, 7);
         assert_eq!(selected, Some(7), "selection moves to the clicked row");
+    }
+
+    #[test]
+    fn filter_term_formats_and_rejects_values() {
+        // Plain values are single-quoted.
+        assert_eq!(
+            filter_term("requestId", "abc-123").as_deref(),
+            Some("requestId='abc-123'")
+        );
+        // A value containing a single quote switches to double quotes.
+        assert_eq!(
+            filter_term("note", "it's broken").as_deref(),
+            Some("note=\"it's broken\"")
+        );
+        // A value containing a double quote stays single-quoted.
+        assert_eq!(
+            filter_term("note", "say \"hi\"").as_deref(),
+            Some("note='say \"hi\"'")
+        );
+        // Unrepresentable values yield no term at all.
+        assert_eq!(filter_term("note", "it's \"both\""), None);
+        assert_eq!(filter_term("note", "two\nlines"), None);
+        assert_eq!(filter_term("note", "two\rlines"), None);
+        // Invalid field names yield no term (would poison the query).
+        assert_eq!(filter_term("user name", "x"), None);
+        assert_eq!(filter_term("1abc", "x"), None);
+        assert_eq!(filter_term("", "x"), None);
+
+        // The clicked row itself always matches its own generated term.
+        for (field, value) in [
+            ("requestId", "abc-123"),
+            ("note", "it's broken"),
+            ("count", "2758"),
+        ] {
+            let term = filter_term(field, value).expect("representable value");
+            let q = query::parse(&term).unwrap();
+            let row = map_with(&[(field, Value::from(value))]);
+            assert!(q.matches("x", Some(&row)), "{term} must match its own row");
+        }
+    }
+
+    #[test]
+    fn append_filter_term_forces_apply() {
+        // Mirrors `poll`: the forced flag is taken and OR'd into the force
+        // argument of `take_pending_apply`.
+        let take_force = |q: &mut QueryUi| std::mem::take(&mut q.force_next_apply);
+
+        // Appending to an empty input installs the term alone.
+        let mut q = QueryUi::new();
+        q.append_filter_term("requestId='abc-123'");
+        assert_eq!(q.input, "requestId='abc-123'");
+        let force = take_force(&mut q);
+        assert!(force, "append must force the apply");
+        let applied = q.take_pending_apply(force).unwrap();
+        assert_eq!(
+            applied.unwrap(),
+            query::parse("requestId='abc-123'").unwrap()
+        );
+
+        // Appending to a non-empty input AND-combines by juxtaposition and
+        // applies without the debounce wait.
+        let mut q = QueryUi::new();
+        q.input = "level=ERROR".into();
+        q.note_edit();
+        assert!(
+            q.take_pending_apply(false).is_none(),
+            "a fresh edit stays inside the debounce window"
+        );
+        q.append_filter_term("service='auth'");
+        assert_eq!(q.input, "level=ERROR service='auth'");
+        let force = take_force(&mut q);
+        let applied = q.take_pending_apply(force).unwrap();
+        assert_eq!(
+            applied.unwrap(),
+            query::parse("level=ERROR service='auth'").unwrap()
+        );
+
+        // The flag is one-shot: without it a fresh edit is debounced again.
+        q.input = "timeout".into();
+        q.note_edit();
+        assert!(!take_force(&mut q));
+        assert!(q.take_pending_apply(false).is_none());
     }
 
     #[test]

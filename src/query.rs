@@ -62,7 +62,12 @@ fn is_field_continue(c: char) -> bool {
     is_field_start(c) || c.is_ascii_digit() || c == '.'
 }
 
-fn valid_field_name(name: &str) -> bool {
+/// True when `name` is a valid query field name: it starts with `@`, an ASCII
+/// letter, or `_`, and continues with those, digits, or `.` (module doc:
+/// field-name grammar). Exposed so a modifier-clicked cell can be rejected up
+/// front when its column name cannot form a term (spec:
+/// modifier-click-filtering / Ineligible cells do nothing).
+pub fn is_valid_field_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
         Some(first) if is_field_start(first) => {}
@@ -181,7 +186,7 @@ fn scan_word(cur: &mut Cursor<'_>, toks: &mut Vec<Tok>) -> Result<(), ParseError
                     });
                 }
             };
-            if !valid_field_name(&name) {
+            if !is_valid_field_name(&name) {
                 let shown = if name.is_empty() { "" } else { &name };
                 let what = if name.is_empty() {
                     "missing field name before '='"
@@ -687,6 +692,17 @@ mod tests {
         assert!(open.message.contains("missing closing"), "{open}");
         let close = parse("level=ERROR) timeout").unwrap_err();
         assert!(close.message.contains("unbalanced"), "{close}");
+    }
+
+    #[test]
+    fn is_valid_field_name_follows_grammar() {
+        assert!(is_valid_field_name("requestId"));
+        assert!(is_valid_field_name("@timestamp"));
+        assert!(is_valid_field_name("a.b_c1"));
+        assert!(!is_valid_field_name(""));
+        assert!(!is_valid_field_name("1abc"));
+        assert!(!is_valid_field_name("user name"));
+        assert!(!is_valid_field_name("a-b"));
     }
 
     #[test]

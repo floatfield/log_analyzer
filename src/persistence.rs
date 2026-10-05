@@ -28,8 +28,41 @@ pub fn default_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("log_analyzer").join("workspace.json"))
 }
 
-/// Persisted per-user workspace: favorite files and per-file visible-column
-/// selections.
+/// Which keyboard modifier turns a cell click into a query filter (spec:
+/// modifier-click-filtering / Configurable filter modifier). `Command` is the
+/// platform command modifier: Cmd on macOS, Ctrl on other platforms.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FilterModifier {
+    #[default]
+    Ctrl,
+    Alt,
+    Shift,
+    Command,
+}
+
+impl FilterModifier {
+    /// All variants in menu order.
+    pub const ALL: [FilterModifier; 4] = [
+        FilterModifier::Ctrl,
+        FilterModifier::Alt,
+        FilterModifier::Shift,
+        FilterModifier::Command,
+    ];
+
+    /// Label shown in the toolbar combo box.
+    pub fn label(self) -> &'static str {
+        match self {
+            FilterModifier::Ctrl => "Ctrl",
+            FilterModifier::Alt => "Alt",
+            FilterModifier::Shift => "Shift",
+            FilterModifier::Command => "Cmd / Ctrl",
+        }
+    }
+}
+
+/// Persisted per-user workspace: favorite files, per-file visible-column
+/// selections, and global settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
     /// Favorite file paths (path keys), in the order they were added.
@@ -38,6 +71,10 @@ pub struct Workspace {
     /// Visible-column selection per file path key.
     #[serde(default)]
     pub columns: BTreeMap<String, Vec<String>>,
+    /// Modifier key that triggers filter-on-click in the table (spec:
+    /// modifier-click-filtering).
+    #[serde(default)]
+    pub filter_modifier: FilterModifier,
 }
 
 impl Workspace {
@@ -164,6 +201,35 @@ mod tests {
         assert_eq!(loaded.favorites, vec!["/two".to_owned()]);
         // No temp leftovers.
         assert!(!path.with_extension("json.tmp").exists());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn filter_modifier_defaults_and_round_trips() {
+        // Each variant serializes lowercase and deserializes back.
+        for (modifier, serialized) in [
+            (FilterModifier::Ctrl, "\"ctrl\""),
+            (FilterModifier::Alt, "\"alt\""),
+            (FilterModifier::Shift, "\"shift\""),
+            (FilterModifier::Command, "\"command\""),
+        ] {
+            assert_eq!(serde_json::to_string(&modifier).unwrap(), serialized);
+            let deserialized: FilterModifier = serde_json::from_str(serialized).unwrap();
+            assert_eq!(deserialized, modifier);
+        }
+
+        // An old workspace file without the field loads as the default (Ctrl).
+        let path = temp_path("filter_modifier_legacy.json");
+        std::fs::write(&path, r#"{"favorites": ["/a"]}"#).unwrap();
+        let ws = Workspace::load(&path);
+        assert_eq!(ws.filter_modifier, FilterModifier::Ctrl);
+        assert_eq!(ws.filter_modifier, FilterModifier::default());
+
+        // The choice round-trips through the workspace file.
+        let mut ws = Workspace::default();
+        ws.filter_modifier = FilterModifier::Alt;
+        ws.save(&path).unwrap();
+        assert_eq!(Workspace::load(&path).filter_modifier, FilterModifier::Alt);
         let _ = std::fs::remove_file(&path);
     }
 
