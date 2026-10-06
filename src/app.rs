@@ -259,11 +259,6 @@ impl ParseCache {
             self.order.push_back(key);
         }
     }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-        self.order.clear();
-    }
 }
 
 /// UI state of the query input.
@@ -273,8 +268,8 @@ struct QueryUi {
     applied_input: String,
     invalid: Option<String>,
     last_edit: Option<Instant>,
-    /// Set by [`QueryUi::append_filter_term`]; the next `poll` takes it and
-    /// ORs it into the force argument so the appended term applies without
+    /// Set by [`QueryUi::replace_filter_term`]; the next `poll` takes it and
+    /// ORs it into the force argument so the replacement term applies without
     /// the debounce wait (design D5). One-shot.
     force_next_apply: bool,
 }
@@ -305,17 +300,12 @@ impl QueryUi {
         self.force_next_apply = false;
     }
 
-    /// Append a generated filter term (spec: modifier-click-filtering /
-    /// Filter term from a modifier-click): ` term` after existing text
-    /// (juxtaposition = AND), the term alone in an empty input, then force an
-    /// apply so the rows filter without the debounce wait.
-    fn append_filter_term(&mut self, term: &str) {
-        if self.input.trim().is_empty() {
-            self.input = term.to_owned();
-        } else {
-            self.input.push(' ');
-            self.input.push_str(term);
-        }
+    /// Install a generated filter term (spec: modifier-click-filtering /
+    /// Filter term from a modifier-click): the term *replaces* the input's
+    /// contents — any previous query text is discarded — then forces an apply
+    /// so the rows filter without the debounce wait (design D8).
+    fn replace_filter_term(&mut self, term: &str) {
+        self.input = term.to_owned();
         self.note_edit();
         self.force_next_apply = true;
     }
@@ -389,17 +379,55 @@ impl FilterModifier {
     }
 }
 
-pub struct LogAnalyzerApp {
-    file: Option<LoadedFile>,
+/// All per-file session state for one opened log, presented as one tab
+/// (spec: log-tabs). Switching tabs swaps this whole struct into view —
+/// no reindex, rescan, or state copying (design D1/D2).
+struct OpenTab {
+    file: LoadedFile,
     rows: RowSource,
     query: QueryUi,
     cache: ParseCache,
-    error: Option<String>,
+    /// The selected row's file line number, if any; drives the detail pane.
+    selected_line: Option<usize>,
     /// Columns-panel field-name filter text (session-only, spec:
     /// log-table-view).
     column_filter: String,
-    /// The selected row's file line number, if any; drives the detail pane.
-    selected_line: Option<usize>,
+}
+
+impl OpenTab {
+    fn new(file: LoadedFile) -> Self {
+        Self {
+            file,
+            rows: RowSource::All,
+            query: QueryUi::new(),
+            cache: ParseCache::new(PARSE_CACHE_CAPACITY),
+            selected_line: None,
+            column_filter: String::new(),
+        }
+    }
+
+    /// Cancel any running query scan and reset the row source to all rows.
+    fn cancel_scan(&mut self) {
+        if let RowSource::Matched(handle) = &self.rows {
+            handle.cancel.store(true, Ordering::Relaxed);
+        }
+        self.rows = RowSource::All;
+    }
+
+    /// Stop all of the tab's background work: open jobs (indexing, field
+    /// discovery) and any running query scan.
+    fn cancel_background_work(&mut self) {
+        self.file.open_cancel.store(true, Ordering::Relaxed);
+        self.cancel_scan();
+    }
+}
+
+pub struct LogAnalyzerApp {
+    /// One tab per opened file (spec: log-tabs).
+    tabs: Vec<OpenTab>,
+    /// Index into `tabs` of the tab the UI shows.
+    active: usize,
+    error: Option<String>,
     /// Keyboard modifier that turns a cell click into a query filter (spec:
     /// modifier-click-filtering). Mirrors `workspace.filter_modifier`.
     filter_modifier: FilterModifier,
@@ -423,17 +451,23 @@ impl LogAnalyzerApp {
             .map(Workspace::load)
             .unwrap_or_default();
         Self {
-            file: None,
-            rows: RowSource::All,
-            query: QueryUi::new(),
-            cache: ParseCache::new(PARSE_CACHE_CAPACITY),
+            tabs: Vec::new(),
+            active: 0,
             error: None,
-            column_filter: String::new(),
-            selected_line: None,
             filter_modifier: workspace.filter_modifier,
             workspace,
             workspace_path: config_path,
         }
+    }
+
+    /// The tab the UI currently shows, if any file is open.
+    fn active_tab(&self) -> Option<&OpenTab> {
+        self.tabs.get(self.active)
+    }
+
+    /// Mutable access to the tab the UI currently shows.
+    fn active_tab_mut(&mut self) -> Option<&mut OpenTab> {
+        self.tabs.get_mut(self.active)
     }
 
     /// Change the filter modifier and persist immediately (spec:
@@ -453,9 +487,10 @@ impl LogAnalyzerApp {
         }
     }
 
-    /// Path key of the currently open file, if any.
+    /// Path key of the active tab's file, if any.
     fn current_file_key(&self) -> Option<String> {
-        self.file.as_ref().map(|f| persistence::path_key(&f.path))
+        self.active_tab()
+            .map(|tab| persistence::path_key(&tab.file.path))
     }
 
     /// Toggle the favorite flag for the open file and persist; returns the
@@ -477,68 +512,52 @@ impl LogAnalyzerApp {
     /// to the workspace (spec: workspace-persistence).
     fn set_column_visible(&mut self, name: &str, on: bool) {
         let update = {
-            let Some(file) = self.file.as_mut() else {
+            let Some(tab) = self.active_tab_mut() else {
                 return;
             };
             if on {
-                if !file.visible_columns.iter().any(|c| c == name) {
-                    file.visible_columns.push(name.to_owned());
+                if !tab.file.visible_columns.iter().any(|c| c == name) {
+                    tab.file.visible_columns.push(name.to_owned());
                 }
             } else {
-                file.visible_columns.retain(|c| c != name);
+                tab.file.visible_columns.retain(|c| c != name);
             }
             (
-                persistence::path_key(&file.path),
-                file.visible_columns.clone(),
+                persistence::path_key(&tab.file.path),
+                tab.file.visible_columns.clone(),
             )
         };
         self.workspace.set_columns(&update.0, update.1);
         self.save_workspace();
     }
 
-    /// Apply the outcome of an open attempt. On failure the previously loaded
-    /// state is retained (spec: log-file-access / Opening a log file).
-    /// Column selection is not picked here: field discovery has not run yet,
-    /// so [`LogAnalyzerApp::maybe_apply_columns`] applies it once fields
-    /// appear.
-    fn on_open_result_inner(&mut self, result: io::Result<LoadedFile>, preserve_query: bool) {
-        match result {
-            Ok(file) => {
-                if let Some(old) = self.file.take() {
-                    old.open_cancel.store(true, Ordering::Relaxed);
-                }
-                self.cancel_active_scan();
-                self.rows = RowSource::All;
-                if !preserve_query {
-                    self.query = QueryUi::new();
-                }
-                self.cache.clear();
-                // Line numbers may shift after a reopen/reload.
-                self.selected_line = None;
-                self.error = None;
-                self.file = Some(file);
-            }
-            Err(e) => {
-                self.error = Some(format!("failed to open file: {e}"));
-            }
+    /// Close the tab at `index`: stop its background work and remove it.
+    /// Focus follows the removal — an earlier tab's removal shifts the strip
+    /// (so the same tab stays in view), closing the active tab moves focus to
+    /// its left neighbor, and closing the last tab leaves the empty state
+    /// (spec: log-tabs / Closing a tab).
+    fn close_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
         }
-    }
-
-    fn cancel_active_scan(&mut self) {
-        if let RowSource::Matched(handle) = &self.rows {
-            handle.cancel.store(true, Ordering::Relaxed);
+        let mut tab = self.tabs.remove(index);
+        tab.cancel_background_work();
+        if index == self.active {
+            self.active = self.active.saturating_sub(1);
+        } else if index < self.active {
+            self.active -= 1;
         }
-        self.rows = RowSource::All;
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
     }
 
     /// Start background jobs for a freshly opened file: incremental index
     /// build followed by field discovery (design D2/D6).
     fn spawn_open_jobs(&mut self) {
-        let Some(file) = &self.file else { return };
-        let map = Arc::clone(&file.map);
-        let index = Arc::clone(&file.index);
-        let fields = Arc::clone(&file.fields);
-        let cancel = Arc::clone(&file.open_cancel);
+        let Some(tab) = self.active_tab() else { return };
+        let map = Arc::clone(&tab.file.map);
+        let index = Arc::clone(&tab.file.index);
+        let fields = Arc::clone(&tab.file.fields);
+        let cancel = Arc::clone(&tab.file.open_cancel);
         std::thread::spawn(move || {
             let mut indexer = IncrementalIndexer::new();
             loop {
@@ -590,47 +609,101 @@ impl LogAnalyzerApp {
         });
     }
 
-    /// Open a path from the UI: mmap synchronously (fast), replace state on
-    /// success, report errors without disturbing the current state.
+    /// Open a path from the UI (spec: log-tabs). A tab already showing this
+    /// file is focused as-is — no re-read and no state reset — otherwise the
+    /// file is read and pushed as a new tab that becomes active; other tabs'
+    /// background work continues untouched. Failures report in the status bar
+    /// and leave every tab as it was.
     pub(crate) fn open_path(&mut self, path: &Path) {
-        self.open_path_inner(path, false);
+        let key = persistence::path_key(path);
+        if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| persistence::path_key(&tab.file.path) == key)
+        {
+            self.active = index;
+            self.error = None;
+            return;
+        }
+        match LoadedFile::open(path) {
+            Ok(file) => {
+                self.tabs.push(OpenTab::new(file));
+                self.active = self.tabs.len() - 1;
+                self.error = None;
+                self.spawn_open_jobs();
+            }
+            Err(e) => {
+                self.error = Some(format!("failed to open file: {e}"));
+            }
+        }
     }
 
-    /// Re-open the current file from disk (spec: log-file-access / Reloading
-    /// the current file). The active query text is kept and re-applied to the
-    /// reloaded contents once indexing completes.
+    /// Re-open the current file from disk into its own tab (spec:
+    /// log-file-access / Reloading the current file). The active query text
+    /// is kept and re-applied to the reloaded contents once indexing
+    /// completes.
     fn reload_current(&mut self) {
-        let Some(path) = self.file.as_ref().map(|f| f.path.clone()) else {
+        let Some(path) = self.active_tab().map(|tab| tab.file.path.clone()) else {
             return;
         };
-        self.open_path_inner(&path, true);
-    }
-
-    fn open_path_inner(&mut self, path: &Path, preserve_query: bool) {
-        let result = LoadedFile::open(path);
+        let result = LoadedFile::open(&path);
         let opened = result.is_ok();
-        self.on_open_result_inner(result, preserve_query);
+        self.on_open_result_inner(result);
         if opened {
             self.spawn_open_jobs();
-            if preserve_query && !self.query.input.trim().is_empty() {
+            if let Some(tab) = self.active_tab_mut()
+                && !tab.query.input.trim().is_empty()
+            {
                 // Re-arm the query so `poll` re-applies it after indexing
                 // finishes (its retry loop keeps the query pending while the
                 // index is still building).
-                self.query.applied_input = String::new();
-                self.query.last_edit = Some(Instant::now());
+                tab.query.applied_input = String::new();
+                tab.query.last_edit = Some(Instant::now());
+            }
+        }
+    }
+
+    /// Install the outcome of re-reading the active tab's file (a reload):
+    /// the tab is replaced at its strip position with the fresh read, keeping
+    /// the query text (the caller re-arms it) and the columns-panel filter;
+    /// the row selection is dropped — line numbers may shift after a reload.
+    /// On failure the previously loaded state is retained (spec:
+    /// log-file-access). Column selection is not picked here: field discovery
+    /// has not run yet, so [`LogAnalyzerApp::maybe_apply_columns`] applies it
+    /// once fields appear.
+    fn on_open_result_inner(&mut self, result: io::Result<LoadedFile>) {
+        match result {
+            Ok(file) => {
+                let index = self.active.min(self.tabs.len().saturating_sub(1));
+                if index >= self.tabs.len() {
+                    // No tab is open; `reload_current` guards against this,
+                    // but installing as the first tab keeps the method total.
+                    self.tabs.push(OpenTab::new(file));
+                    self.active = 0;
+                } else {
+                    let mut old = std::mem::replace(&mut self.tabs[index], OpenTab::new(file));
+                    old.cancel_background_work();
+                    let fresh = &mut self.tabs[index];
+                    fresh.query = old.query;
+                    fresh.column_filter = old.column_filter;
+                }
+                self.error = None;
+            }
+            Err(e) => {
+                self.error = Some(format!("failed to open file: {e}"));
             }
         }
     }
 
     /// Start a background scan for `query`, replacing any running one.
     fn start_query_scan(&mut self, query: Query) {
-        let Some(file) = self.file.as_ref() else {
+        let Some(tab) = self.active_tab_mut() else {
             return;
         };
-        let map = Arc::clone(&file.map);
-        let index = Arc::clone(&file.index);
-        let fields = Arc::clone(&file.fields);
-        self.cancel_active_scan();
+        let map = Arc::clone(&tab.file.map);
+        let index = Arc::clone(&tab.file.index);
+        let fields = Arc::clone(&tab.file.fields);
+        tab.cancel_scan();
         let handle = ScanHandle::new();
         let ScanHandle {
             line_numbers,
@@ -638,7 +711,7 @@ impl LogAnalyzerApp {
             done,
             cancel,
         } = handle.clone();
-        self.rows = RowSource::Matched(handle);
+        tab.rows = RowSource::Matched(handle);
         std::thread::spawn(move || {
             let index_guard = match index.read() {
                 Ok(g) => g,
@@ -662,7 +735,9 @@ impl LogAnalyzerApp {
 
     /// Show every row (empty/invalid query or cleared input).
     fn reset_rows_to_all(&mut self) {
-        self.cancel_active_scan();
+        if let Some(tab) = self.active_tab_mut() {
+            tab.cancel_scan();
+        }
     }
 
     /// Apply the per-file column selection once field discovery has produced
@@ -670,26 +745,24 @@ impl LogAnalyzerApp {
     /// defaults (spec: workspace-persistence / Restoring saved columns). Runs
     /// at most once per file so user column edits afterwards are preserved.
     fn maybe_apply_columns(&mut self) {
-        let should = self
-            .file
-            .as_ref()
-            .is_some_and(|f| !f.defaults_applied && !f.fields.lock().unwrap().is_empty());
+        let should = self.active_tab().is_some_and(|tab| {
+            !tab.file.defaults_applied && !tab.file.fields.lock().unwrap().is_empty()
+        });
         if !should {
             return;
         }
         let saved = self
-            .file
-            .as_ref()
-            .map(|f| {
-                let key = persistence::path_key(&f.path);
+            .active_tab()
+            .map(|tab| {
+                let key = persistence::path_key(&tab.file.path);
                 self.workspace.columns_for(&key).cloned()
             })
             .unwrap_or_default();
-        if let Some(file) = self.file.as_mut() {
-            file.defaults_applied = true;
+        if let Some(tab) = self.active_tab_mut() {
+            tab.file.defaults_applied = true;
             match saved {
-                Some(columns) => file.visible_columns = columns,
-                None => file.apply_default_columns(),
+                Some(columns) => tab.file.visible_columns = columns,
+                None => tab.file.apply_default_columns(),
             }
         }
     }
@@ -699,23 +772,32 @@ impl LogAnalyzerApp {
     fn poll(&mut self, ctx: &egui::Context) {
         self.maybe_apply_columns();
         let mut force = self.enter_pressed_this_frame(ctx);
-        // A modifier-click just appended a term: apply it without waiting out
-        // the debounce (design D5).
-        if std::mem::take(&mut self.query.force_next_apply) {
-            force = true;
-        }
-        match self.query.take_pending_apply(force) {
+        let pending = match self.active_tab_mut() {
+            Some(tab) => {
+                // A modifier-click just replaced the query input: apply it
+                // without waiting out the debounce (design D5).
+                if std::mem::take(&mut tab.query.force_next_apply) {
+                    force = true;
+                }
+                tab.query.take_pending_apply(force)
+            }
+            None => None,
+        };
+        match pending {
             Some(Ok(q)) => {
                 if q.is_empty() {
                     self.reset_rows_to_all();
-                } else if self.file.as_ref().is_some_and(LoadedFile::index_done) {
+                } else if self
+                    .active_tab()
+                    .is_some_and(|tab| tab.file.index_done())
+                {
                     self.start_query_scan(q);
                 }
                 // While indexing is still running the query stays pending:
                 // applied_input was already updated, so re-arm the debounce.
-                else {
-                    self.query.last_edit = Some(Instant::now());
-                    self.query.applied_input = String::new();
+                else if let Some(tab) = self.active_tab_mut() {
+                    tab.query.last_edit = Some(Instant::now());
+                    tab.query.applied_input = String::new();
                 }
             }
             Some(Err(_)) => {
@@ -727,22 +809,26 @@ impl LogAnalyzerApp {
                 // with no further input events — otherwise a query typed (or
                 // re-armed by Reload) on a small file that finished indexing
                 // within the click frame would never be applied.
-                if let Some(wait) = self.query.pending_debounce_wait() {
+                if let Some(tab) = self.active_tab()
+                    && let Some(wait) = tab.query.pending_debounce_wait()
+                {
                     ctx.request_repaint_after(wait.max(Duration::from_millis(10)));
                 }
             }
         }
 
+        // Busy-repaint considers only the active tab (design D5): hidden
+        // tabs' background work needs no repaint driving.
         let mut busy = false;
-        if let Some(file) = &self.file
-            && !file.index_done()
-        {
-            busy = true;
-        }
-        if let RowSource::Matched(handle) = &self.rows
-            && !handle.done.load(Ordering::Relaxed)
-        {
-            busy = true;
+        if let Some(tab) = self.active_tab() {
+            if !tab.file.index_done() {
+                busy = true;
+            }
+            if let RowSource::Matched(handle) = &tab.rows
+                && !handle.done.load(Ordering::Relaxed)
+            {
+                busy = true;
+            }
         }
         if busy {
             ctx.request_repaint_after(Duration::from_millis(50));
@@ -755,18 +841,18 @@ impl LogAnalyzerApp {
 
     /// Clone the data the table needs for one frame.
     fn snapshot_view(&self) -> Option<TableView> {
-        let file = self.file.as_ref()?;
+        let tab = self.active_tab()?;
         Some(TableView {
-            map: Arc::clone(&file.map),
-            index: Arc::clone(&file.index),
-            rows: self.rows.clone(),
-            columns: file.visible_columns.clone(),
+            map: Arc::clone(&tab.file.map),
+            index: Arc::clone(&tab.file.index),
+            rows: tab.rows.clone(),
+            columns: tab.file.visible_columns.clone(),
         })
     }
 
-    /// Lines scanned so far by the active query scan, if any.
+    /// Lines scanned so far by the active tab's query scan, if any.
     fn scan_progress(&self) -> Option<(usize, bool)> {
-        match &self.rows {
+        match &self.active_tab()?.rows {
             RowSource::All => None,
             RowSource::Matched(handle) => Some((
                 handle.scanned.load(Ordering::Relaxed),
@@ -775,10 +861,11 @@ impl LogAnalyzerApp {
         }
     }
 
-    /// Pretty-printed text for the selected row, when a file is open and a
-    /// row is selected (design: row selection / detail pane).
+    /// Pretty-printed text for the active tab's selected row, when a file is
+    /// open and a row is selected (design: row selection / detail pane).
     fn selected_row_detail(&self) -> Option<String> {
-        row_detail(self.file.as_ref()?, self.selected_line?)
+        let tab = self.active_tab()?;
+        row_detail(&tab.file, tab.selected_line?)
     }
 }
 
@@ -791,17 +878,17 @@ impl eframe::App for LogAnalyzerApp {
                 ui.strong("log_analyzer");
                 ui.separator();
                 if ui.button("Open...").clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Log files", &["log", "txt"])
-                        .add_filter("All files", &["*"])
-                        .pick_file()
+                    && let Some(path) = rfd::FileDialog::new().pick_file()
                 {
+                    // No extension filter (spec: log-file-access / Opening a
+                    // log file): any picked file opens; line classification
+                    // decides structure per line, independent of the name.
                     self.open_path(&path);
                 }
                 // Reload the current file from disk; inactive with no file
                 // open (spec: log-file-access / Reloading the current file).
                 if ui
-                    .add_enabled(self.file.is_some(), egui::Button::new("Reload"))
+                    .add_enabled(self.active_tab().is_some(), egui::Button::new("Reload"))
                     .clicked()
                 {
                     self.reload_current();
@@ -813,15 +900,16 @@ impl eframe::App for LogAnalyzerApp {
                     .is_some_and(|key| self.workspace.is_favorite(&key));
                 let star = if favorite { "★" } else { "☆" };
                 if ui
-                    .add_enabled(self.file.is_some(), egui::Button::new(star))
+                    .add_enabled(self.active_tab().is_some(), egui::Button::new(star))
                     .clicked()
                 {
                     self.toggle_favorite_current();
                 }
-                // Favorites list: click to open, ✕ to remove (spec:
-                // workspace-persistence / Managing favorites).
+                // Favorites list: click to open, x to remove (spec:
+                // workspace-persistence / Managing favorites). Presented in
+                // sorted order, not marking order.
                 ui.menu_button("Favorites", |ui| {
-                    let favorites = self.workspace.favorites.clone();
+                    let favorites = self.workspace.sorted_favorites();
                     if favorites.is_empty() {
                         ui.weak("no favorites yet");
                     }
@@ -832,7 +920,7 @@ impl eframe::App for LogAnalyzerApp {
                                 self.open_path(&path);
                                 ui.close();
                             }
-                            if ui.small_button("✕").clicked() {
+                            if ui.small_button("x").clicked() {
                                 self.remove_favorite(&fav);
                                 ui.close();
                             }
@@ -840,31 +928,46 @@ impl eframe::App for LogAnalyzerApp {
                     }
                 });
                 ui.separator();
-                let invalid = self.query.invalid.clone();
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.query.input)
-                        .hint_text("query: level=ERROR timeout")
-                        .desired_width(420.0),
-                );
-                if response.changed() {
-                    self.query.note_edit();
+                let enter_now = self.enter_pressed_this_frame(ctx);
+                if let Some(tab) = self.active_tab_mut() {
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut tab.query.input)
+                            .hint_text("query: level=ERROR timeout")
+                            .desired_width(420.0),
+                    );
+                    if response.changed() {
+                        tab.query.note_edit();
+                    }
+                    if response.lost_focus() && enter_now {
+                        // `poll` on the next frame handles the forced apply via
+                        // the global Enter check.
+                    }
+                } else {
+                    ui.add_enabled(
+                        false,
+                        egui::TextEdit::singleline(&mut String::new())
+                            .hint_text("query: level=ERROR timeout")
+                            .desired_width(420.0),
+                    );
                 }
-                if response.lost_focus() && self.enter_pressed_this_frame(ctx) {
-                    // `poll` on the next frame handles the forced apply via
-                    // the global Enter check.
-                }
+                let invalid = self.active_tab().and_then(|tab| tab.query.invalid.clone());
+                let input_empty = self
+                    .active_tab()
+                    .is_none_or(|tab| tab.query.input.trim().is_empty());
                 match &invalid {
                     Some(message) => {
                         ui.colored_label(egui::Color32::RED, format!("invalid query: {message}"));
                     }
                     None => {
-                        if self.query.input.trim().is_empty() {
+                        if input_empty {
                             ui.weak("showing all rows");
                         }
                     }
                 }
                 if ui.button("Reset").clicked() {
-                    self.query.reset();
+                    if let Some(tab) = self.active_tab_mut() {
+                        tab.query.reset();
+                    }
                     self.reset_rows_to_all();
                 }
                 // Filter modifier for click-to-filter (spec:
@@ -881,11 +984,44 @@ impl eframe::App for LogAnalyzerApp {
                     self.set_filter_modifier(chosen);
                 }
                 ui.separator();
-                if let Some(file) = &self.file {
-                    ui.label(file.path.display().to_string());
+                if let Some(tab) = self.active_tab() {
+                    ui.label(tab.file.path.display().to_string());
                 }
             });
         });
+
+        // Tab strip: one entry per opened file (spec: log-tabs). Hidden
+        // while no file is open. Labels are collected up front so the loop
+        // can switch or close tabs through `&mut self`.
+        if !self.tabs.is_empty() {
+            let labels: Vec<(String, String)> = self
+                .tabs
+                .iter()
+                .map(|tab| {
+                    (
+                        tab_label(&tab.file.path),
+                        tab.file.path.display().to_string(),
+                    )
+                })
+                .collect();
+            egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    for (index, (label, full_path)) in labels.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let response = ui
+                                .selectable_label(index == self.active, label.as_str())
+                                .on_hover_text(full_path.as_str());
+                            if response.clicked() {
+                                self.active = index;
+                            }
+                            if ui.small_button("x").clicked() {
+                                self.close_tab(index);
+                            }
+                        });
+                    }
+                });
+            });
+        }
 
         egui::SidePanel::right("inspector").show(ctx, |ui| {
             // Upper pane: column selection (spec: log-table-view).
@@ -896,29 +1032,24 @@ impl eframe::App for LogAnalyzerApp {
                 .show_inside(ui, |ui| {
                     ui.heading("Columns");
                     ui.separator();
-                    let discovered: Option<Vec<String>> = self
-                        .file
-                        .as_ref()
-                        .map(|f| f.fields.lock().unwrap().iter().cloned().collect());
-                    let Some(discovered) = discovered else {
+                    let Some(tab) = self.active_tab_mut() else {
                         ui.weak("no file open");
                         return;
                     };
-                    let visible: Vec<String> = self
-                        .file
-                        .as_ref()
-                        .map(|f| f.visible_columns.clone())
-                        .unwrap_or_default();
+                    let discovered: Vec<String> =
+                        tab.file.fields.lock().unwrap().iter().cloned().collect();
+                    let visible: Vec<String> = tab.file.visible_columns.clone();
                     // Field-name filter: narrows the list only; selection and
                     // the table are untouched (spec: log-table-view).
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.column_filter)
+                        egui::TextEdit::singleline(&mut tab.column_filter)
                             .hint_text("filter fields")
                             .desired_width(ui.available_width()),
                     );
+                    let column_filter = tab.column_filter.clone();
                     let shown: Vec<String> = discovered
                         .into_iter()
-                        .filter(|name| field_matches_filter(name, &self.column_filter))
+                        .filter(|name| field_matches_filter(name, &column_filter))
                         .collect();
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for name in shown {
@@ -932,9 +1063,10 @@ impl eframe::App for LogAnalyzerApp {
 
             // Lower pane: pretty-printed contents of the selected row.
             let detail = self.selected_row_detail();
+            let selected_line = self.active_tab().and_then(|tab| tab.selected_line);
             ui.horizontal(|ui| {
                 ui.heading("Row detail");
-                if let Some(line) = self.selected_line {
+                if let Some(line) = selected_line {
                     ui.weak(format!("line {}", line + 1));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -969,7 +1101,8 @@ impl eframe::App for LogAnalyzerApp {
                     ui.colored_label(egui::Color32::RED, error);
                     ui.separator();
                 }
-                if let Some(file) = &self.file {
+                if let Some(tab) = self.active_tab() {
+                    let file = &tab.file;
                     if !file.index_done() {
                         ui.label(format!("indexing... {} lines", file.line_count()));
                     } else {
@@ -981,7 +1114,7 @@ impl eframe::App for LogAnalyzerApp {
                                 ));
                             }
                             _ => {
-                                let shown = self.rows.row_count(&file.index.read().unwrap());
+                                let shown = tab.rows.row_count(&file.index.read().unwrap());
                                 ui.label(format!("{shown} / {} rows", file.line_count()));
                             }
                         }
@@ -999,22 +1132,25 @@ impl eframe::App for LogAnalyzerApp {
                 });
                 return;
             };
-            render_table(
-                ui,
-                &view,
-                &mut self.cache,
-                &mut self.selected_line,
-                self.filter_modifier,
-                &mut self.query,
-            );
+            let filter_modifier = self.filter_modifier;
+            if let Some(tab) = self.active_tab_mut() {
+                render_table(
+                    ui,
+                    &view,
+                    &mut tab.cache,
+                    &mut tab.selected_line,
+                    filter_modifier,
+                    &mut tab.query,
+                );
+            }
         });
     }
 }
 
 /// Render the virtualized table; `selected` is the selected row's line
 /// number, toggled by clicking rows without `filter_modifier` held. With the
-/// modifier held, a structured cell click instead appends its filter term to
-/// `query_ui` (spec: modifier-click-filtering).
+/// modifier held, a structured cell click instead replaces the contents of
+/// `query_ui` with the cell's filter term (spec: modifier-click-filtering).
 fn render_table(
     ui: &mut egui::Ui,
     view: &TableView,
@@ -1178,7 +1314,7 @@ fn render_table(
                                     .map(query::field_value_as_text)
                                     .and_then(|value| filter_term(column, &value))
                             }) {
-                                query_ui.append_filter_term(&term);
+                                query_ui.replace_filter_term(&term);
                             }
                             // A modifier-click on an ineligible cell (raw
                             // row, missing value, unqueryable name,
@@ -1270,6 +1406,14 @@ fn level_tint(entry: Option<&serde_json::Map<String, Value>>) -> Option<egui::Co
 fn field_matches_filter(name: &str, filter: &str) -> bool {
     let filter = filter.trim();
     filter.is_empty() || name.to_lowercase().contains(&filter.to_lowercase())
+}
+
+/// Tab-strip label for a file: its name, falling back to the full path when
+/// the path has no file name component (spec: log-tabs).
+fn tab_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 #[cfg(test)]
@@ -1378,14 +1522,14 @@ mod tests {
         let bytes = b"{\"a\": 1}\n";
         let path = temp_file("retention.log", bytes);
         let app = &mut LogAnalyzerApp::with_workspace(None);
-        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()), false);
-        let first_path = app.file.as_ref().unwrap().path.clone();
+        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()));
+        let first_path = app.active_tab().unwrap().file.path.clone();
 
-        app.on_open_result_inner(
-            Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied")),
-            false,
-        );
-        assert_eq!(app.file.as_ref().unwrap().path, first_path);
+        app.on_open_result_inner(Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "denied",
+        )));
+        assert_eq!(app.active_tab().unwrap().file.path, first_path);
         assert!(app.error.is_some());
         let _ = std::fs::remove_file(&path);
     }
@@ -1395,28 +1539,142 @@ mod tests {
         let bytes = b"{\"@timestamp\": \"t\", \"level\": \"INFO\", \"message\": \"m\"}\n";
         let path = temp_file("defaults.log", bytes);
         let app = &mut LogAnalyzerApp::with_workspace(None);
-        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()), false);
+        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()));
         // Defaults cannot be picked at open time; they are applied once field
         // discovery has produced names (mirrors the flow in `poll`).
         {
-            let file = app.file.as_mut().unwrap();
-            let mut fields = file.fields.lock().unwrap();
+            let tab = app.active_tab_mut().unwrap();
+            let mut fields = tab.file.fields.lock().unwrap();
             fields.insert("@timestamp".to_owned());
             fields.insert("level".to_owned());
             fields.insert("message".to_owned());
         }
         app.maybe_apply_columns();
         assert_eq!(
-            app.file.as_ref().unwrap().visible_columns,
+            app.active_tab().unwrap().file.visible_columns,
             vec!["@timestamp", "level", "message"]
         );
         // Later frames (and user edits) are not clobbered: defaults apply once.
         app.maybe_apply_columns();
         assert_eq!(
-            app.file.as_ref().unwrap().visible_columns,
+            app.active_tab().unwrap().file.visible_columns,
             vec!["@timestamp", "level", "message"]
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ---- 4.2: tabbed open flow (focus-or-push) ----
+
+    #[test]
+    fn open_focuses_existing_tab_and_preserves_context() {
+        let bytes = b"{\"level\": \"INFO\"}\n";
+        let path = temp_file("focus_existing.log", bytes);
+        let app = &mut LogAnalyzerApp::with_workspace(None);
+        app.open_path(&path);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !app.active_tab().unwrap().file.index_done() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Distinctive context on the tab, plus a handle on its shared index
+        // so the no-re-read guarantee is observable.
+        let tab = app.active_tab_mut().unwrap();
+        tab.query.input = "level=ERROR".into();
+        tab.column_filter = "req".into();
+        tab.selected_line = Some(0);
+        let index_arc = Arc::clone(&tab.file.index);
+
+        // Re-opening the same path focuses the existing tab: one tab, the
+        // same read (shared index identity), context untouched.
+        app.open_path(&path);
+        assert_eq!(app.tabs.len(), 1, "no duplicate tab");
+        assert_eq!(app.active, 0);
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.file.path, path);
+        assert!(
+            Arc::ptr_eq(&index_arc, &tab.file.index),
+            "the file was not re-read"
+        );
+        assert_eq!(tab.query.input, "level=ERROR");
+        assert_eq!(tab.column_filter, "req");
+        assert_eq!(tab.selected_line, Some(0));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn opening_second_file_keeps_first_tab() {
+        let a_path = temp_file("second_a.log", b"{\"level\": \"INFO\"}\n");
+        let b_path = temp_file("second_b.log", b"{\"level\": \"ERROR\"}\n");
+        let app = &mut LogAnalyzerApp::with_workspace(None);
+        app.open_path(&a_path);
+        app.active_tab_mut().unwrap().query.input = "level=INFO".into();
+
+        // Opening a second file pushes and activates a new tab.
+        app.open_path(&b_path);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active, 1);
+        assert_eq!(app.active_tab().unwrap().file.path, b_path);
+
+        // The first tab keeps its file and context, and the second open did
+        // not cancel its background work.
+        let first = &app.tabs[0];
+        assert_eq!(first.file.path, a_path);
+        assert_eq!(first.query.input, "level=INFO");
+        assert!(!first.file.open_cancel.load(Ordering::Relaxed));
+
+        // Reopening the first file focuses its tab instead of duplicating it.
+        app.open_path(&a_path);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active, 0);
+        let _ = std::fs::remove_file(&a_path);
+        let _ = std::fs::remove_file(&b_path);
+    }
+
+    #[test]
+    fn close_tab_cancels_removed_tab_and_clamps_active() {
+        let a = temp_file("tabs_a.log", b"{\"level\": \"INFO\"}\n");
+        let b = temp_file("tabs_b.log", b"{\"level\": \"INFO\"}\n");
+        let c = temp_file("tabs_c.log", b"{\"level\": \"INFO\"}\n");
+        let d = temp_file("tabs_d.log", b"{\"level\": \"INFO\"}\n");
+        let e = temp_file("tabs_e.log", b"{\"level\": \"INFO\"}\n");
+        let app = &mut LogAnalyzerApp::with_workspace(None);
+        app.open_path(&a);
+        app.open_path(&b);
+        app.open_path(&c);
+        app.active = 1; // B active
+
+        // Closing an earlier inactive tab shifts the strip; B stays in view.
+        app.close_tab(0);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active, 0);
+        assert_eq!(app.active_tab().unwrap().file.path, b);
+
+        // Closing a tab right of the active one leaves focus alone and
+        // cancels the closed tab's background work.
+        let c_cancel = Arc::clone(&app.tabs[1].file.open_cancel);
+        app.close_tab(1);
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active, 0);
+        assert!(c_cancel.load(Ordering::Relaxed));
+
+        // Closing the last remaining tab leaves the empty state.
+        let b_cancel = Arc::clone(&app.tabs[0].file.open_cancel);
+        app.close_tab(0);
+        assert!(app.tabs.is_empty());
+        assert!(app.active_tab().is_none());
+        assert!(b_cancel.load(Ordering::Relaxed));
+
+        // Closing the active tab with a left neighbor focuses that neighbor.
+        let app2 = &mut LogAnalyzerApp::with_workspace(None);
+        app2.open_path(&d);
+        app2.open_path(&e);
+        app2.active = 1;
+        app2.close_tab(1);
+        assert_eq!(app2.active, 0);
+        assert_eq!(app2.active_tab().unwrap().file.path, d);
+
+        for path in [&a, &b, &c, &d, &e] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     // ---- 4.1: open flow with background indexing + discovery ----
@@ -1426,7 +1684,7 @@ mod tests {
         let path = std::path::Path::new("log_examples/first.log");
         let app = &mut LogAnalyzerApp::with_workspace(None);
         app.open_path(path);
-        let file = app.file.as_ref().expect("file loaded");
+        let file = &app.active_tab().expect("file loaded").file;
 
         // Wait for the background index build (progressive availability:
         // line_count grows before `done` flips).
@@ -1440,11 +1698,13 @@ mod tests {
 
         // Wait for field discovery, then defaults.
         let deadline = Instant::now() + Duration::from_secs(10);
-        while file.fields.lock().unwrap().is_empty() && Instant::now() < deadline {
+        while app.active_tab().unwrap().file.fields.lock().unwrap().is_empty()
+            && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(5));
         }
         app.maybe_apply_columns();
-        let file = app.file.as_ref().unwrap();
+        let file = &app.active_tab().unwrap().file;
         let fields = file.fields.lock().unwrap();
         for expected in ["@timestamp", "level", "message", "durationMs"] {
             assert!(fields.contains(expected), "missing field {expected}");
@@ -1613,9 +1873,10 @@ mod tests {
         let bytes = b"{\"level\": \"INFO\", \"message\": \"m\"}\n";
         let path = temp_file("column_filter.log", bytes);
         let app = &mut LogAnalyzerApp::with_workspace(None);
-        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()), false);
-        app.file.as_mut().unwrap().visible_columns = vec!["level".into(), "message".into()];
-        app.column_filter = "req".into();
+        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()));
+        let tab = app.active_tab_mut().unwrap();
+        tab.file.visible_columns = vec!["level".into(), "message".into()];
+        tab.column_filter = "req".into();
 
         // What the panel would render now: only the matching names…
         let discovered = ["level", "message", "requestId"]
@@ -1624,14 +1885,14 @@ mod tests {
             .collect::<Vec<_>>();
         let shown: Vec<&String> = discovered
             .iter()
-            .filter(|name| field_matches_filter(name, &app.column_filter))
+            .filter(|name| field_matches_filter(name, &tab.column_filter))
             .collect();
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0], "requestId");
 
         // …while the hidden-but-selected columns stay applied to the table.
         assert_eq!(
-            app.file.as_ref().unwrap().visible_columns,
+            app.active_tab().unwrap().file.visible_columns,
             vec!["level", "message"]
         );
         let _ = std::fs::remove_file(&path);
@@ -1648,7 +1909,7 @@ mod tests {
         let key = persistence::path_key(&log_path);
 
         let app = &mut LogAnalyzerApp::with_workspace(Some(ws_path.clone()));
-        app.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()), false);
+        app.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()));
         assert!(app.toggle_favorite_current().unwrap());
         // Write-through: the workspace file exists after the mutation.
         assert!(ws_path.exists());
@@ -1670,7 +1931,7 @@ mod tests {
         let key = persistence::path_key(&log_path);
 
         let app = &mut LogAnalyzerApp::with_workspace(Some(ws_path.clone()));
-        app.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()), false);
+        app.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()));
 
         // Toggle on: marked and persisted.
         assert!(app.toggle_favorite_current().unwrap());
@@ -1716,8 +1977,8 @@ mod tests {
         let log_path = temp_file("ws_columns.log", bytes);
         let key = persistence::path_key(&log_path);
         fn discover(app: &mut LogAnalyzerApp) {
-            let file = app.file.as_mut().unwrap();
-            let mut fields = file.fields.lock().unwrap();
+            let tab = app.active_tab_mut().unwrap();
+            let mut fields = tab.file.fields.lock().unwrap();
             for name in ["@timestamp", "level", "message", "extra"] {
                 fields.insert(name.to_owned());
             }
@@ -1726,16 +1987,16 @@ mod tests {
         // Instance 1: defaults apply at discovery, then a user change is
         // written through to the workspace.
         let app = &mut LogAnalyzerApp::with_workspace(Some(ws_path.clone()));
-        app.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()), false);
+        app.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()));
         discover(app);
         app.maybe_apply_columns();
         assert_eq!(
-            app.file.as_ref().unwrap().visible_columns,
+            app.active_tab().unwrap().file.visible_columns,
             vec!["@timestamp", "level", "message"]
         );
         app.set_column_visible("message", false);
         assert_eq!(
-            app.file.as_ref().unwrap().visible_columns,
+            app.active_tab().unwrap().file.visible_columns,
             vec!["@timestamp", "level"]
         );
         assert_eq!(
@@ -1745,11 +2006,11 @@ mod tests {
 
         // Instance 2: reopening restores the saved selection over defaults.
         let app2 = &mut LogAnalyzerApp::with_workspace(Some(ws_path.clone()));
-        app2.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()), false);
+        app2.on_open_result_inner(Ok(LoadedFile::open(&log_path).unwrap()));
         discover(app2);
         app2.maybe_apply_columns();
         assert_eq!(
-            app2.file.as_ref().unwrap().visible_columns,
+            app2.active_tab().unwrap().file.visible_columns,
             vec!["@timestamp", "level"]
         );
 
@@ -1759,12 +2020,12 @@ mod tests {
 
     // ---- 6.1/6.2: reload current file ----
 
-    /// Block until the active background scan finishes (tests run scans
+    /// Block until the active tab's background scan finishes (tests run scans
     /// directly, without the egui poll loop).
     fn wait_scan_done(app: &LogAnalyzerApp) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            match &app.rows {
+            match &app.active_tab().expect("active tab").rows {
                 RowSource::Matched(handle) if handle.done.load(Ordering::Relaxed) => return,
                 RowSource::Matched(_) => {}
                 RowSource::All => panic!("expected a running query scan"),
@@ -1782,34 +2043,42 @@ mod tests {
 
         app.open_path(&log_path);
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !app.file.as_ref().unwrap().index_done() && Instant::now() < deadline {
+        while !app.active_tab().unwrap().file.index_done() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(app.file.as_ref().unwrap().index_done());
-        assert_eq!(app.file.as_ref().unwrap().line_count(), 1);
+        assert!(app.active_tab().unwrap().file.index_done());
+        assert_eq!(app.active_tab().unwrap().file.line_count(), 1);
 
         // Discover fields and save a deliberately empty column selection, so
         // it can be told apart from the default selection (which would be
         // ["level"] here).
-        app.file
-            .as_mut()
+        app.active_tab_mut()
             .unwrap()
+            .file
             .fields
             .lock()
             .unwrap()
             .insert("level".to_owned());
         app.maybe_apply_columns();
-        assert_eq!(app.file.as_ref().unwrap().visible_columns, vec!["level"]);
+        assert_eq!(
+            app.active_tab().unwrap().file.visible_columns,
+            vec!["level"]
+        );
         app.set_column_visible("level", false);
 
         // An active query filters the loaded rows.
-        app.query.input = "level=ERROR".into();
-        app.query.note_edit();
-        let q = app.query.take_pending_apply(true).unwrap().unwrap();
+        let tab = app.active_tab_mut().unwrap();
+        tab.query.input = "level=ERROR".into();
+        tab.query.note_edit();
+        let q = tab.query.take_pending_apply(true).unwrap().unwrap();
         app.start_query_scan(q);
         wait_scan_done(app);
-        let index_guard = app.file.as_ref().unwrap().index.read().unwrap();
-        assert_eq!(app.rows.row_count(&index_guard), 0, "no ERROR rows yet");
+        let index_guard = app.active_tab().unwrap().file.index.read().unwrap();
+        assert_eq!(
+            app.active_tab().unwrap().rows.row_count(&index_guard),
+            0,
+            "no ERROR rows yet"
+        );
         drop(index_guard);
 
         // Append to the file behind the app's back, then reload.
@@ -1823,17 +2092,18 @@ mod tests {
 
         // The query text is preserved and re-armed so `poll` re-applies it
         // once indexing finishes.
-        assert_eq!(app.query.input, "level=ERROR");
-        assert!(app.query.applied_input.is_empty(), "query re-armed");
-        assert!(app.query.last_edit.is_some());
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.query.input, "level=ERROR");
+        assert!(tab.query.applied_input.is_empty(), "query re-armed");
+        assert!(tab.query.last_edit.is_some());
 
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !app.file.as_ref().unwrap().index_done() && Instant::now() < deadline {
+        while !app.active_tab().unwrap().file.index_done() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(app.file.as_ref().unwrap().index_done());
+        assert!(app.active_tab().unwrap().file.index_done());
         assert_eq!(
-            app.file.as_ref().unwrap().line_count(),
+            app.active_tab().unwrap().file.line_count(),
             2,
             "reload picks up appended content"
         );
@@ -1841,25 +2111,32 @@ mod tests {
         // Field discovery re-runs on the reloaded file; once fields appear,
         // `poll` restores the saved selection instead of the defaults.
         let deadline = Instant::now() + Duration::from_secs(10);
-        while app.file.as_ref().unwrap().fields.lock().unwrap().is_empty()
+        while app
+            .active_tab()
+            .unwrap()
+            .file
+            .fields
+            .lock()
+            .unwrap()
+            .is_empty()
             && Instant::now() < deadline
         {
             std::thread::sleep(Duration::from_millis(5));
         }
         app.maybe_apply_columns();
         assert!(
-            app.file.as_ref().unwrap().visible_columns.is_empty(),
+            app.active_tab().unwrap().file.visible_columns.is_empty(),
             "saved (empty) column selection restored over defaults"
         );
 
         // The step `poll` performs after re-arming: re-apply the preserved
         // query against the reloaded rows.
-        let q = query::parse(&app.query.input).unwrap();
+        let q = query::parse(&app.active_tab().unwrap().query.input).unwrap();
         app.start_query_scan(q);
         wait_scan_done(app);
-        let index_guard = app.file.as_ref().unwrap().index.read().unwrap();
+        let index_guard = app.active_tab().unwrap().file.index.read().unwrap();
         assert_eq!(
-            app.rows.row_count(&index_guard),
+            app.active_tab().unwrap().rows.row_count(&index_guard),
             1,
             "query still filters the reloaded rows"
         );
@@ -1870,10 +2147,9 @@ mod tests {
     #[test]
     fn reload_without_file_is_noop() {
         let app = &mut LogAnalyzerApp::with_workspace(None);
-        app.query.input = "level=ERROR".into();
         app.reload_current();
-        assert!(app.file.is_none());
-        assert_eq!(app.query.input, "level=ERROR");
+        assert!(app.active_tab().is_none());
+        assert!(app.error.is_none());
     }
 
     // ---- 5.1: row source mapping ----
@@ -1952,39 +2228,39 @@ mod tests {
     }
 
     #[test]
-    fn append_filter_term_forces_apply() {
+    fn replace_filter_term_rewrites_input() {
         // Mirrors `poll`: the forced flag is taken and OR'd into the force
         // argument of `take_pending_apply`.
         let take_force = |q: &mut QueryUi| std::mem::take(&mut q.force_next_apply);
 
-        // Appending to an empty input installs the term alone.
+        // An empty input becomes exactly the term.
         let mut q = QueryUi::new();
-        q.append_filter_term("requestId='abc-123'");
+        q.replace_filter_term("requestId='abc-123'");
         assert_eq!(q.input, "requestId='abc-123'");
         let force = take_force(&mut q);
-        assert!(force, "append must force the apply");
+        assert!(force, "the replacement must force the apply");
         let applied = q.take_pending_apply(force).unwrap();
         assert_eq!(
             applied.unwrap(),
             query::parse("requestId='abc-123'").unwrap()
         );
 
-        // Appending to a non-empty input AND-combines by juxtaposition and
-        // applies without the debounce wait.
+        // A non-empty input is rewritten: the previous query text is
+        // discarded and the term applies alone, without the debounce wait.
         let mut q = QueryUi::new();
-        q.input = "level=ERROR".into();
+        q.input = "level=ERROR service='auth'".into();
         q.note_edit();
         assert!(
             q.take_pending_apply(false).is_none(),
             "a fresh edit stays inside the debounce window"
         );
-        q.append_filter_term("service='auth'");
-        assert_eq!(q.input, "level=ERROR service='auth'");
+        q.replace_filter_term("requestId='abc-123'");
+        assert_eq!(q.input, "requestId='abc-123'");
         let force = take_force(&mut q);
         let applied = q.take_pending_apply(force).unwrap();
         assert_eq!(
             applied.unwrap(),
-            query::parse("level=ERROR service='auth'").unwrap()
+            query::parse("requestId='abc-123'").unwrap()
         );
 
         // The flag is one-shot: without it a fresh edit is debounced again.
@@ -2023,19 +2299,19 @@ mod tests {
         // Seed the index directly (background indexing is a separate job).
         let mut file = LoadedFile::open(&path).unwrap();
         file.index = Arc::new(RwLock::new(fixture_index(bytes)));
-        app.on_open_result_inner(Ok(file), false);
+        app.on_open_result_inner(Ok(file));
 
         // Selecting a line exposes its pretty-printed JSON.
-        app.selected_line = Some(1);
+        app.active_tab_mut().unwrap().selected_line = Some(1);
         assert_eq!(
-            row_detail(app.file.as_ref().unwrap(), 1).as_deref(),
+            row_detail(&app.active_tab().unwrap().file, 1).as_deref(),
             Some("{\n  \"level\": \"ERROR\",\n  \"message\": \"boom\"\n}")
         );
         assert!(app.selected_row_detail().is_some());
 
         // Opening a file again resets the selection: line numbers may shift.
-        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()), false);
-        assert_eq!(app.selected_line, None);
+        app.on_open_result_inner(Ok(LoadedFile::open(&path).unwrap()));
+        assert_eq!(app.active_tab().unwrap().selected_line, None);
         assert!(app.selected_row_detail().is_none());
         let _ = std::fs::remove_file(&path);
     }
@@ -2055,7 +2331,7 @@ mod tests {
         let t_open = Instant::now();
         app.open_path(path);
         let open_elapsed = t_open.elapsed();
-        let file = app.file.as_ref().unwrap();
+        let file = &app.active_tab().unwrap().file;
 
         // Progressive availability: rows appear well before indexing finishes.
         let t_first = Instant::now();
@@ -2076,15 +2352,23 @@ mod tests {
         let lines = file.line_count();
 
         let t_fields = Instant::now();
-        while app.file.as_ref().unwrap().fields.lock().unwrap().is_empty() {
+        while app
+            .active_tab()
+            .unwrap()
+            .file
+            .fields
+            .lock()
+            .unwrap()
+            .is_empty()
+        {
             std::thread::sleep(Duration::from_millis(5));
         }
         let fields_elapsed = t_fields.elapsed();
         app.maybe_apply_columns();
-        assert!(!app.file.as_ref().unwrap().visible_columns.is_empty());
+        assert!(!app.active_tab().unwrap().file.visible_columns.is_empty());
 
         // Query scan on a background thread (as production does).
-        let file = app.file.as_ref().unwrap();
+        let file = &app.active_tab().unwrap().file;
         let q = query::parse("level=ERROR timeout").unwrap();
         let handle = ScanHandle::new();
         let map = Arc::clone(&file.map);

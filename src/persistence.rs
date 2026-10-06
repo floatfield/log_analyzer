@@ -118,6 +118,16 @@ impl Workspace {
         self.favorites.iter().any(|p| p == path_key)
     }
 
+    /// Presentation-ordered copy of the favorites list: sorted by lowercased
+    /// path, stable on ties (spec: workspace-persistence / File favorites).
+    /// The persisted `favorites` order — the order files were marked — is
+    /// left untouched.
+    pub fn sorted_favorites(&self) -> Vec<String> {
+        let mut sorted = self.favorites.clone();
+        sorted.sort_by_key(|path| path.to_lowercase());
+        sorted
+    }
+
     /// Remember the visible-column selection for a file.
     pub fn set_columns(&mut self, path_key: &str, columns: Vec<String>) {
         self.columns.insert(path_key.to_owned(), columns);
@@ -185,6 +195,36 @@ mod tests {
         assert_eq!(ws.favorites, vec!["/b".to_owned()]);
         assert!(!ws.is_favorite("/a"));
         assert!(ws.is_favorite("/b"));
+    }
+
+    #[test]
+    fn sorted_favorites_orders_case_insensitively() {
+        let mut ws = Workspace::default();
+        // Marked out of alphabetical order, including case-only differences:
+        // "/Logs/c.log" and "/logs/A.log" sort by their lowercased keys
+        // ("/logs/c.log", "/logs/a.log").
+        for key in ["/logs/b.log", "/logs/a.log", "/Logs/c.log", "/logs/A.log"] {
+            ws.toggle_favorite(key);
+        }
+        assert_eq!(
+            ws.sorted_favorites(),
+            vec![
+                "/logs/a.log".to_owned(),
+                "/logs/A.log".to_owned(),
+                "/logs/b.log".to_owned(),
+                "/Logs/c.log".to_owned(),
+            ]
+        );
+        // Presentation-only: the persisted list keeps the marking order.
+        assert_eq!(
+            ws.favorites,
+            vec![
+                "/logs/b.log".to_owned(),
+                "/logs/a.log".to_owned(),
+                "/Logs/c.log".to_owned(),
+                "/logs/A.log".to_owned(),
+            ]
+        );
     }
 
     #[test]

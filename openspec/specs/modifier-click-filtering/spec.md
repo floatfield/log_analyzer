@@ -27,7 +27,7 @@ The system SHALL let the user choose which modifier key triggers filter-on-click
 
 ### Requirement: Filter term from a modifier-click
 
-Clicking a cell of a structured row while holding the configured filter modifier SHALL append a field-equality term for that cell's column and value to the query input — the term `field='value'` for a cell in column `field` showing `value` — and SHALL apply the query immediately so the table shows only rows matching the whole query. Appending SHALL combine the new term with any existing query text by AND, per the query language's juxtaposition rule.
+Clicking a cell of a structured row while holding the configured filter modifier SHALL form the field-equality term for that cell's column and value — the term `field='value'` for a cell in column `field` showing `value` — SHALL replace the query input's contents with that term (any previous query text is discarded), and SHALL apply the query immediately so the table shows only rows matching the term.
 
 #### Scenario: Clicking a requestId cell
 
@@ -36,8 +36,8 @@ Clicking a cell of a structured row while holding the configured filter modifier
 
 #### Scenario: Appending to an existing query
 
-- **WHEN** the query input contains `level=ERROR` and the user modifier-clicks a `service` cell whose value is `auth`
-- **THEN** the query input contains `level=ERROR service='auth'` and the table shows only entries matching that whole query
+- **WHEN** the query input contains `level=ERROR service='auth'` and the user modifier-clicks a `requestId` cell whose entry's `requestId` value is `abc-123`
+- **THEN** the query input contains only `requestId='abc-123'` — the clicked term replaces the previous query text instead of being appended to it — and the table shows only entries whose `requestId` equals `abc-123`
 
 #### Scenario: Filter applies without typing or pressing Enter
 
