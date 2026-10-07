@@ -424,7 +424,7 @@ mod tests {
     }
 
     /// The AND-combined atoms of a simple (ungrouped, OR-free) query.
-    fn and_atoms<'a>(q: &'a Query) -> &'a [Expr] {
+    fn and_atoms(q: &Query) -> &[Expr] {
         match q.root() {
             Some(Expr::And(atoms)) => atoms,
             other => panic!("expected And, got {other:?}"),

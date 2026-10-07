@@ -3,6 +3,11 @@ name = "log_analyzer"
 version = "0.1.0"
 edition = "2024"
 
+# The merge utility (design D1); `src/main.rs` is the implicit GUI binary.
+[[bin]]
+name = "log-merge"
+path = "src/bin/log_merge.rs"
+
 [dependencies]
 dirs = "6"
 eframe = "0.33.3"

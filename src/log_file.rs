@@ -28,9 +28,9 @@ impl IndexData {
         self.offsets.len().saturating_sub(1)
     }
 
-    /// Build a complete index for `bytes` in one pass. Test-only convenience:
-    /// production builds the index incrementally via [`IncrementalIndexer`].
-    #[cfg(test)]
+    /// Build a complete index for `bytes` in one pass. Convenience for tests
+    /// and small tools: production builds the index incrementally via
+    /// [`IncrementalIndexer`].
     pub fn build(bytes: &[u8]) -> Self {
         let mut data = IndexData::default();
         let mut indexer = IncrementalIndexer::new();
@@ -57,9 +57,8 @@ impl IndexData {
     }
 }
 
-/// Chunk size used when scanning for line offsets. Test-only: production
-/// scanning chunks from `app.rs` (`INDEX_CHUNK_BYTES`).
-#[cfg(test)]
+/// Chunk size used when scanning for line offsets in [`IndexData::build`];
+/// production scanning chunks from `app.rs` (`INDEX_CHUNK_BYTES`).
 const CHUNK_BYTES: usize = 1 << 20;
 
 /// Incremental line-offset scanner. Feed it the same byte slice repeatedly

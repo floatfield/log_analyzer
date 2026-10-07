@@ -1,7 +1,6 @@
 //! log_analyzer - a cross-platform GUI log explorer.
 
 mod app;
-mod log_file;
 mod persistence;
 mod query;
 

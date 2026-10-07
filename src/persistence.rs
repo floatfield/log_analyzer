@@ -266,8 +266,10 @@ mod tests {
         assert_eq!(ws.filter_modifier, FilterModifier::default());
 
         // The choice round-trips through the workspace file.
-        let mut ws = Workspace::default();
-        ws.filter_modifier = FilterModifier::Alt;
+        let ws = Workspace {
+            filter_modifier: FilterModifier::Alt,
+            ..Default::default()
+        };
         ws.save(&path).unwrap();
         assert_eq!(Workspace::load(&path).filter_modifier, FilterModifier::Alt);
         let _ = std::fs::remove_file(&path);

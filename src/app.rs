@@ -15,9 +15,9 @@ use egui_extras::Column;
 use memmap2::Mmap;
 use serde_json::Value;
 
-use crate::log_file::{self, IncrementalIndexer, IndexData};
 use crate::persistence::{self, FilterModifier, Workspace};
 use crate::query::{self, Query};
+use log_analyzer::log_file::{self, IncrementalIndexer, IndexData};
 
 /// How many bytes the incremental indexer scans per pass.
 const INDEX_CHUNK_BYTES: usize = 4 << 20;
@@ -787,10 +787,7 @@ impl LogAnalyzerApp {
             Some(Ok(q)) => {
                 if q.is_empty() {
                     self.reset_rows_to_all();
-                } else if self
-                    .active_tab()
-                    .is_some_and(|tab| tab.file.index_done())
-                {
+                } else if self.active_tab().is_some_and(|tab| tab.file.index_done()) {
                     self.start_query_scan(q);
                 }
                 // While indexing is still running the query stays pending:
@@ -1698,7 +1695,14 @@ mod tests {
 
         // Wait for field discovery, then defaults.
         let deadline = Instant::now() + Duration::from_secs(10);
-        while app.active_tab().unwrap().file.fields.lock().unwrap().is_empty()
+        while app
+            .active_tab()
+            .unwrap()
+            .file
+            .fields
+            .lock()
+            .unwrap()
+            .is_empty()
             && Instant::now() < deadline
         {
             std::thread::sleep(Duration::from_millis(5));
