@@ -1033,6 +1033,7 @@ impl eframe::App for LogAnalyzerApp {
                         ui.weak("no file open");
                         return;
                     };
+                    let file_key = persistence::path_key(&tab.file.path);
                     let discovered: Vec<String> =
                         tab.file.fields.lock().unwrap().iter().cloned().collect();
                     let visible: Vec<String> = tab.file.visible_columns.clone();
@@ -1048,18 +1049,23 @@ impl eframe::App for LogAnalyzerApp {
                         .into_iter()
                         .filter(|name| field_matches_filter(name, &column_filter))
                         .collect();
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for name in shown {
-                            let mut on = visible.contains(&name);
-                            if ui.checkbox(&mut on, name.as_str()).changed() {
-                                self.set_column_visible(&name, on);
+                    egui::ScrollArea::vertical()
+                        .id_salt(scroll_salt("log_columns", &file_key))
+                        .show(ui, |ui| {
+                            for name in shown {
+                                let mut on = visible.contains(&name);
+                                if ui.checkbox(&mut on, name.as_str()).changed() {
+                                    self.set_column_visible(&name, on);
+                                }
                             }
-                        }
-                    });
+                        });
                 });
 
             // Lower pane: pretty-printed contents of the selected row.
             let detail = self.selected_row_detail();
+            let detail_salt = self
+                .active_tab()
+                .map(|tab| scroll_salt("log_detail", &persistence::path_key(&tab.file.path)));
             let selected_line = self.active_tab().and_then(|tab| tab.selected_line);
             ui.horizontal(|ui| {
                 ui.heading("Row detail");
@@ -1079,12 +1085,14 @@ impl eframe::App for LogAnalyzerApp {
             ui.separator();
             match detail {
                 Some(text) => {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(text).monospace())
-                                .wrap_mode(egui::TextWrapMode::Wrap),
-                        );
-                    });
+                    egui::ScrollArea::vertical()
+                        .id_salt(detail_salt)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(text).monospace())
+                                    .wrap_mode(egui::TextWrapMode::Wrap),
+                            );
+                        });
                 }
                 None => {
                     ui.weak("select a row to inspect its contents");
@@ -1131,9 +1139,11 @@ impl eframe::App for LogAnalyzerApp {
             };
             let filter_modifier = self.filter_modifier;
             if let Some(tab) = self.active_tab_mut() {
+                let table_key = persistence::path_key(&tab.file.path);
                 render_table(
                     ui,
                     &view,
+                    &table_key,
                     &mut tab.cache,
                     &mut tab.selected_line,
                     filter_modifier,
@@ -1144,13 +1154,25 @@ impl eframe::App for LogAnalyzerApp {
     }
 }
 
+/// Stable egui id salt for one tab's scrollable UI, derived from the file's
+/// path key. Scroll offsets live in egui memory under the widget id, and
+/// without a per-tab salt every tab's table and panes share one id — a
+/// shorter tab then clamps the shared offset and the long tab's position is
+/// lost on return.
+fn scroll_salt(kind: &str, file_key: &str) -> egui::Id {
+    egui::Id::new((kind, file_key))
+}
+
 /// Render the virtualized table; `selected` is the selected row's line
 /// number, toggled by clicking rows without `filter_modifier` held. With the
 /// modifier held, a structured cell click instead replaces the contents of
 /// `query_ui` with the cell's filter term (spec: modifier-click-filtering).
+/// `table_key` is the active tab's path key, salting the table's id so each
+/// tab keeps its own scroll position.
 fn render_table(
     ui: &mut egui::Ui,
     view: &TableView,
+    table_key: &str,
     cache: &mut ParseCache,
     selected: &mut Option<usize>,
     filter_modifier: FilterModifier,
@@ -1164,6 +1186,7 @@ fn render_table(
         .unwrap_or(0);
 
     let mut table = egui_extras::TableBuilder::new(ui)
+        .id_salt(scroll_salt("log_table", table_key))
         .striped(true)
         .resizable(true)
         .vscroll(true)
@@ -2468,5 +2491,98 @@ mod tests {
         assert!(cache.entries.contains_key(&1));
         assert!(!cache.entries.contains_key(&2));
         assert!(a.is_some());
+    }
+
+    // ---- per-tab scroll identity (tab-switch position reset) ----
+
+    #[test]
+    fn scroll_salts_stable_per_tab_and_distinct_across() {
+        // Same pane + same file: one id across frames, so a tab's scroll
+        // state survives other tabs rendering in between.
+        assert_eq!(
+            scroll_salt("log_table", "/a.log"),
+            scroll_salt("log_table", "/a.log")
+        );
+        // Different tabs never share a scroll id (the shared id is what let a
+        // shorter tab clamp the longer tab's offset).
+        assert_ne!(
+            scroll_salt("log_table", "/a.log"),
+            scroll_salt("log_table", "/b.log")
+        );
+        // The panes of one tab are kept apart, too.
+        assert_ne!(
+            scroll_salt("log_table", "/a.log"),
+            scroll_salt("log_columns", "/a.log")
+        );
+        assert_ne!(
+            scroll_salt("log_table", "/a.log"),
+            scroll_salt("log_detail", "/a.log")
+        );
+    }
+
+    #[test]
+    fn scroll_position_survives_rendering_a_shorter_tab() {
+        // Renders one "tab": a scroll area under `salt`, tall content,
+        // optionally scrolled to its bottom. Returns the scroll offset the
+        // frame observed (0.0 when no state survived from earlier frames).
+        fn frame(ctx: &egui::Context, salt: egui::Id, scroll_to_bottom: bool) -> f32 {
+            egui::CentralPanel::default()
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt(salt)
+                        .show(ui, |ui| {
+                            for i in 0..300 {
+                                ui.label(format!("row {i}"));
+                            }
+                            if scroll_to_bottom {
+                                ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+                            }
+                        })
+                        .state
+                        .offset
+                        .y
+                })
+                .inner
+        }
+
+        let ctx = egui::Context::default();
+        // Deterministic scrolling: no easing between frames.
+        ctx.style_mut(|style| {
+            style.scroll_animation = egui::style::ScrollAnimation::none();
+        });
+        // A fixed viewport: without a screen rect egui has nothing to scroll.
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..egui::RawInput::default()
+        };
+        let salt_a = scroll_salt("log_table", "a.log");
+        let salt_b = scroll_salt("log_table", "b.log");
+
+        // Tab A: scrolled to its bottom.
+        let mut before = 0.0;
+        for _ in 0..3 {
+            let _ = ctx.run(input(), |ctx| {
+                before = frame(ctx, salt_a, true);
+            });
+        }
+        assert!(before > 100.0, "tab A must end up scrolled, got {before}");
+
+        // Tab B: much shorter content, rendered at the same widget position.
+        let _ = ctx.run(input(), |ctx| {
+            frame(ctx, salt_b, false);
+        });
+
+        // Tab A again: its scroll offset must have survived tab B's render.
+        let mut after = 0.0;
+        let _ = ctx.run(input(), |ctx| {
+            after = frame(ctx, salt_a, false);
+        });
+        assert!(
+            (after - before).abs() < 1.0,
+            "tab A's scroll position must survive rendering tab B: {before} -> {after}"
+        );
     }
 }
