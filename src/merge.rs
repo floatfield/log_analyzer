@@ -42,8 +42,11 @@ impl std::fmt::Display for MergeError {
 /// lazily; non-object lines buffer into [`FileCursor::pending_raw`] and the
 /// merge flushes them immediately before this cursor's next entry — or at
 /// exhaustion — so a raw line lands between its same-input neighbors.
+///
+/// Shared with the sorter (log-sort design D9): `open_unordered` lifts the
+/// ascending-order check for inputs that carry no ordering requirement.
 #[derive(Debug)]
-struct FileCursor {
+pub(crate) struct FileCursor {
     reader: BufReader<File>,
     /// Path as given, for error messages.
     display: String,
@@ -56,10 +59,22 @@ struct FileCursor {
     prev_timestamp: Option<String>,
     pending_raw: Vec<String>,
     finished: bool,
+    /// Enforce the ascending-order contract in `next_entry` (false for sort).
+    ordered: bool,
 }
 
 impl FileCursor {
     fn open(path: &Path) -> Result<Self, MergeError> {
+        Self::open_with(path, true)
+    }
+
+    /// Like [`FileCursor::open`], but without the ascending-order check
+    /// (log-sort design D9: sort inputs carry no ordering requirement).
+    pub(crate) fn open_unordered(path: &Path) -> Result<Self, MergeError> {
+        Self::open_with(path, false)
+    }
+
+    fn open_with(path: &Path, ordered: bool) -> Result<Self, MergeError> {
         let file = File::open(path).map_err(|e| MergeError {
             file: path.display().to_string(),
             line: 0,
@@ -73,12 +88,13 @@ impl FileCursor {
             prev_timestamp: None,
             pending_raw: Vec::new(),
             finished: false,
+            ordered,
         })
     }
 
     /// Next entry of this file, or `None` at end of file. Raw lines met along
     /// the way are buffered, not returned.
-    fn next_entry(&mut self) -> Result<Option<CursorEntry>, MergeError> {
+    pub(crate) fn next_entry(&mut self) -> Result<Option<CursorEntry>, MergeError> {
         loop {
             if self.finished {
                 return Ok(None);
@@ -106,7 +122,8 @@ impl FileCursor {
                             );
                         }
                     };
-                    if let Some(prev) = &self.prev_timestamp
+                    if self.ordered
+                        && let Some(prev) = &self.prev_timestamp
                         && timestamp.as_str() < prev.as_str()
                     {
                         return Err(self.error(format!(
@@ -127,6 +144,17 @@ impl FileCursor {
             line: self.line_no,
             reason,
         }
+    }
+
+    /// 1-based line number of the most recently read line — the line of the
+    /// entry last returned by [`FileCursor::next_entry`], if any.
+    pub(crate) fn line_no(&self) -> usize {
+        self.line_no
+    }
+
+    /// Take the raw lines buffered since the previous entry.
+    pub(crate) fn take_pending_raw(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_raw)
     }
 }
 
@@ -187,6 +215,13 @@ impl Eq for HeapItem {}
 /// into a temporary file beside `output` and is renamed over it only on
 /// success; any failure leaves `output` exactly as it was.
 pub fn merge_files(inputs: &[PathBuf], output: &Path) -> Result<usize, MergeError> {
+    merge_runs(inputs, output, true)
+}
+
+/// Like [`merge_files`], with origin stamping controlled by `stamp` (design
+/// D3 of log-sort): `stamp = true` adds the `system` property naming the
+/// source file to every entry, `stamp = false` writes entries unchanged.
+pub fn merge_runs(inputs: &[PathBuf], output: &Path, stamp: bool) -> Result<usize, MergeError> {
     if let Some(input) = output_collides(inputs, output) {
         return Err(MergeError {
             file: output.display().to_string(),
@@ -218,7 +253,7 @@ pub fn merge_files(inputs: &[PathBuf], output: &Path) -> Result<usize, MergeErro
     })?;
     let mut writer = BufWriter::new(file);
     let mut written = 0usize;
-    let result = drain_heap(&mut heap, &mut cursors, &mut writer, &mut written);
+    let result = drain_heap(&mut heap, &mut cursors, &mut writer, &mut written, stamp);
     let finish = result.and_then(|()| writer.flush().map_err(|e| write_error(output, e)));
     drop(writer);
     match finish {
@@ -241,19 +276,26 @@ pub fn merge_files(inputs: &[PathBuf], output: &Path) -> Result<usize, MergeErro
 }
 
 /// Pop entries in timestamp order, flushing each cursor's pending raw lines
-/// just before that cursor's entry (or at its exhaustion), and stamping every
-/// entry with its source file's name (design D2/D4).
+/// just before that cursor's entry (or at its exhaustion), and — when
+/// `stamp` is set — stamping every entry with its source file's name
+/// (design D2/D4; stamping optional per log-sort design D3). After the heap
+/// is drained, cursors whose file held no entries flush their buffered raw
+/// lines too (in input order): their lines are owed to the output even
+/// though they contributed no entry.
 fn drain_heap(
     heap: &mut std::collections::BinaryHeap<HeapItem>,
     cursors: &mut [FileCursor],
     writer: &mut BufWriter<File>,
     written: &mut usize,
+    stamp: bool,
 ) -> Result<(), MergeError> {
     while let Some(item) = heap.pop() {
         let cursor = &mut cursors[item.input_index];
         *written += flush_pending(cursor, writer)?;
         let mut entry = item.entry;
-        entry.insert("system".to_owned(), Value::String(cursor.system.clone()));
+        if stamp {
+            entry.insert("system".to_owned(), Value::String(cursor.system.clone()));
+        }
         let line = serde_json::to_string(&entry).map_err(|e| {
             write_error_from(&cursor.display, format!("failed to serialize entry: {e}"))
         })?;
@@ -273,6 +315,11 @@ fn drain_heap(
             }
         }
     }
+    // Entry-less cursors never surface through the heap; their buffered raw
+    // lines flush here, in input order.
+    for cursor in cursors.iter_mut() {
+        *written += flush_pending(cursor, writer)?;
+    }
     Ok(())
 }
 
@@ -291,7 +338,7 @@ fn flush_pending(
     Ok(count)
 }
 
-fn write_error(output: &Path, e: std::io::Error) -> MergeError {
+pub(crate) fn write_error(output: &Path, e: std::io::Error) -> MergeError {
     write_error_from(
         &output.display().to_string(),
         format!("failed to write output: {e}"),
@@ -309,7 +356,7 @@ fn write_error_from(file: &str, reason: String) -> MergeError {
 /// True when `path` designates the same file as `output`: exact path
 /// equality, or identity after resolving symlinks and relative components
 /// (design D5). A not-yet-existing output is resolved through its parent.
-fn output_collides(inputs: &[PathBuf], output: &Path) -> Option<String> {
+pub(crate) fn output_collides(inputs: &[PathBuf], output: &Path) -> Option<String> {
     let output = canonical_path(output);
     for input in inputs {
         if output.as_deref() == Some(input.as_path()) {
@@ -334,7 +381,7 @@ fn canonical_path(path: &Path) -> Option<PathBuf> {
 
 /// Hidden temporary file in the output's directory (same filesystem so the
 /// final rename is atomic); the pid keeps concurrent runs apart.
-fn temp_path_for(output: &Path) -> PathBuf {
+pub(crate) fn temp_path_for(output: &Path) -> PathBuf {
     let name = output
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -347,7 +394,7 @@ fn temp_path_for(output: &Path) -> PathBuf {
 
 /// Replace `output` with `temp` (design D5). Unix rename already replaces;
 /// on Windows (rename fails onto an existing file) remove and retry.
-fn install_output(temp: &Path, output: &Path) -> std::io::Result<()> {
+pub(crate) fn install_output(temp: &Path, output: &Path) -> std::io::Result<()> {
     match std::fs::rename(temp, output) {
         Ok(()) => Ok(()),
         Err(e) if output.exists() => std::fs::remove_file(output)
@@ -706,6 +753,19 @@ mod tests {
         let out = std::env::temp_dir().join("log_merge_test_empty_out");
         assert_eq!(merge_files(&[a], &out).unwrap(), 0);
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "");
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn raw_only_input_is_carried_through() {
+        // An input with no entries at all still owes its lines to the output.
+        let a = write_input("rawonly_a", &["# just a note", "plain line"]);
+        let out = std::env::temp_dir().join("log_merge_test_rawonly_out");
+        assert_eq!(merge_files(&[a], &out).unwrap(), 2);
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            "# just a note\nplain line\n"
+        );
         let _ = std::fs::remove_file(&out);
     }
 }

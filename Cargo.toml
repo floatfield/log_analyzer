@@ -8,6 +8,11 @@ edition = "2024"
 name = "log-merge"
 path = "src/bin/log_merge.rs"
 
+# The sort utility (log-sort design D1).
+[[bin]]
+name = "log-sort"
+path = "src/bin/log_sort.rs"
+
 [dependencies]
 dirs = "6"
 eframe = "0.33.3"

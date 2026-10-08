@@ -1,18 +1,19 @@
-//! `log-merge` — merge log files into one time-ordered file (spec: log-merge).
+//! `log-sort` — sort log files into one `@timestamp`-ascending file (spec:
+//! log-sort).
 //!
-//! Usage: `log-merge --output <path> <input>...`
+//! Usage: `log-sort --output <path> <input>...`
 //!
-//! Exit codes (design D7): 0 on success, 1 on contract/I/O failures
-//! (reported as `<file>:<line>: <reason>`), 2 on usage errors including an
-//! output path that names one of the inputs.
+//! Exit codes: 0 on success, 1 on contract/I/O failures (reported as
+//! `<file>:<line>: <reason>`), 2 on usage errors including an output path
+//! that names one of the inputs.
 
 use std::process::ExitCode;
 
 use log_analyzer::cli::parse_output_inputs;
-use log_analyzer::merge::merge_files;
+use log_analyzer::sort::sort_files;
 
-const PROGRAM: &str = "log-merge";
-const USAGE: &str = "usage: log-merge --output <path> <input>...";
+const PROGRAM: &str = "log-sort";
+const USAGE: &str = "usage: log-sort --output <path> <input>...";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -23,7 +24,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match merge_files(&parsed.inputs, &parsed.output) {
+    match sort_files(&parsed.inputs, &parsed.output) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{PROGRAM}: {e}");
@@ -43,14 +44,14 @@ mod tests {
     }
 
     #[test]
-    fn shared_parser_accepts_the_log_merge_shape() {
+    fn shared_parser_accepts_the_log_sort_shape() {
         let parsed = parse_output_inputs(&args(&["--output", "out.log", "a.log"]), USAGE).unwrap();
         assert_eq!(parsed.output, PathBuf::from("out.log"));
         assert_eq!(parsed.inputs, vec![PathBuf::from("a.log")]);
     }
 
     #[test]
-    fn usage_error_renders_the_usage_line() {
+    fn usage_error_renders_the_log_sort_usage_line() {
         let e = UsageError::Usage {
             usage: USAGE.to_owned(),
         };
@@ -58,7 +59,7 @@ mod tests {
     }
 
     #[test]
-    fn collision_error_renders_usage_plus_reason() {
+    fn collision_error_names_the_log_sort_program() {
         let msg = UsageError::OutputNamesInput {
             output: PathBuf::from("a.log"),
             usage: USAGE.to_owned(),
@@ -66,7 +67,7 @@ mod tests {
         .message(PROGRAM);
         assert_eq!(
             msg,
-            format!("{USAGE}\nlog-merge: output path `a.log` names an input file")
+            format!("{USAGE}\nlog-sort: output path `a.log` names an input file")
         );
     }
 }
